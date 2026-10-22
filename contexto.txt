@@ -1,0 +1,233 @@
+# Contexto enviado à Soniox. Carregado automaticamente pelo recorder.py.
+# Confira o que será enviado com: python3 recorder.py --check
+#
+# Formato:
+#   "chave: valor"  -> informação geral (no máximo ~10 chaves; mesma chave de um padrão o substitui:
+#                      idioma, assunto, tema, local, participantes)
+#   "texto: ..."    -> parágrafo de apoio (várias linhas "texto:" são juntadas)
+#   demais linhas   -> palavras-chave, uma por linha
+#   linhas com #    -> ignoradas
+# Regra: NÃO colocar números ou dados checáveis aqui. O contexto influencia o reconhecimento,
+# e o modelo poderia "ouvir" o número da base em vez do que o candidato disse.
+
+# --- Informação geral -------------------------------------------------------------------
+participantes: Luiz Inácio Lula da Silva (Lula, PT) e Flávio Bolsonaro (PL), candidatos à Presidência; César Tralli, mediador
+local: Debate do segundo turno ao vivo na TV Globo, mediado por César Tralli
+formato: Primeiro bloco com perguntas por região sorteada; segundo bloco com temas escolhidos numa lista no telão; terceiro bloco com temas livres e considerações finais
+
+texto: Debate presidencial do segundo turno das eleições de 2026 no Brasil, em português do Brasil, entre Lula e Flávio Bolsonaro.
+texto: Temas prováveis: segurança pública e crime organizado (PCC, Comando Vermelho, milícias, Lei Antifacção, PEC da Segurança, Estatuto do Desarmamento, maioridade penal);
+texto: o caso Banco Master e Daniel Vorcaro; economia, contas públicas, inflação, emprego e juros; escala 6x1 e jornada de trabalho; Previdência e INSS;
+texto: programas sociais (Bolsa Família, Pé-de-Meia, Farmácia Popular, Desenrola); saúde e filas do SUS; educação e institutos federais;
+texto: eleições, urnas e TSE; STF e Alexandre de Moraes; 8 de janeiro e trama golpista; Estados Unidos, tarifaço e Argentina; meio ambiente, desmatamento e queimadas;
+texto: religião e costumes; apostas (bets); privatizações e Petrobras.
+
+# --- Pessoas: candidatos, campanhas, governo -----------------------------------------------
+Luiz Inácio Lula da Silva
+Flávio Bolsonaro
+César Tralli
+Jair Bolsonaro
+Michelle Bolsonaro
+Eduardo Bolsonaro
+Carlos Bolsonaro
+Janja
+Janja da Silva
+Lulinha
+Geraldo Alckmin
+Edinho Silva
+Camilo Santana
+Jaques Wagner
+Rui Costa
+Dario Durigan
+André Janones
+Rogério Marinho
+Duda Lima
+Daniella Marques
+Alfredo Gaspar
+Fábio Wajngarten
+Tarcísio de Freitas
+Nikolas Ferreira
+Gustavo Gayer
+Guilherme Derrite
+Pablo Marçal
+Eduarda Campopiano
+Paulo Figueiredo
+Cláudio Lottenberg
+
+# --- Pessoas: Justiça, polícia, Banco Central -------------------------------------------
+Alexandre de Moraes
+Moraes
+Kassio Nunes Marques
+Nunes Marques
+André Mendonça
+Gilmar Mendes
+Flávio Dino
+Bellizze
+Andrei Rodrigues
+Gabriel Galípolo
+Galípolo
+Campos Neto
+Baptista Júnior
+
+# --- Pessoas: casos e ataques -------------------------------------------------------------
+Daniel Vorcaro
+Vorcaro
+Augusto Lima
+Rodrigo Bacellar
+Márcio Canella
+Adriano da Nóbrega
+Roberta Luchsinger
+Luchsinger
+João Vaccari Neto
+Vaccari
+Careca do INSS
+Sicário
+Luciano Huck
+
+# --- Pessoas: outros ----------------------------------------------------------------------
+Dilma Rousseff
+Michel Temer
+Hamilton Mourão
+Sergio Moro
+Fernando Henrique Cardoso
+FHC
+Donald Trump
+Javier Milei
+
+# --- Partidos, órgãos e siglas --------------------------------------------------------------
+PT
+PL
+PP
+PSB
+STF
+STJ
+TSE
+TCU
+PF
+PGR
+CPMI
+GSI
+FAB
+Coaf
+Banco Central
+BRB
+Banco do Brasil
+Caixa
+IBGE
+IPCA
+PIB
+Pnad
+Rais
+Selic
+Focus
+PLOA
+PEC
+PLP
+FPM
+INSS
+SUS
+RNDS
+MEC
+MDIC
+MDS
+Ibama
+INPE
+Prodes
+Deter
+FBSP
+Anuário Brasileiro de Segurança Pública
+USTR
+COP30
+G20
+ONU
+MEIs
+Simples Nacional
+CACs
+PCC
+Comando Vermelho
+Primeiro Comando da Capital
+IFs
+institutos federais
+ITA
+Anacrim
+Correios
+Petrobras
+Datafolha
+Quaest
+Lupa
+Aos Fatos
+Jornal Nacional
+
+# --- Casos, leis, programas e temas --------------------------------------------------------
+Banco Master
+caso Master
+Will Bank
+Dark Horse
+Lava Jato
+Mensalão
+trama golpista
+8 de janeiro
+anistia
+dosimetria
+Constituinte
+Smartmatic
+urnas eletrônicas
+Lei Antifacção
+PEC da Segurança
+Ministério da Segurança Pública
+Estatuto do Desarmamento
+maioridade penal
+castração química
+milícia
+feminicídio
+escala 6x1
+PEC do Trabalho Flexível
+Bolsa Família
+Pé-de-Meia
+Farmácia Popular
+Desenrola
+Mais Médicos
+Minha Casa, Minha Vida
+MCMV
+Plano Safra
+Mapa da Fome
+Pix
+tarifaço
+Escudo das Américas
+bets
+Gastômetro
+Margem Equatorial
+Morpho
+Amazônia Legal
+Cerrado
+Pantanal
+Marabá
+Belém
+Amapá
+Nossa Senhora Aparecida
+padroeira
+Medalha Tiradentes
+Exército do Lula
+Tropa do Flávio
+
+# --- Bordões e expressões recorrentes (sem números) -----------------------------------------
+pai do tigrinho
+Tesouraço
+Lula é Moraes
+votar em Lula é votar em Moraes
+O Pix é do Bolsonaro, o Master é do Lula
+babaquice
+SUS padrão Einstein
+prontuário único
+Pinóquio da Picanha
+descondenado
+senhorinha com Bíblia
+não acredita em Deus
+Lula porreta
+Lula paz e amor
+fim da era PT
+Opala turbinado
+jamais questionei o processo eleitoral
+não mandou umzinho
+fábrica de fake news
+guerra ao crime

@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transcrição do Debate</title>
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --panel: #ffffff;
+    --ink: #1b1b1b;
+    --muted: #6b6b6b;
+    --line: #e3e0d8;
+    --hl: #fff1b8;
+    --lula: #b3261e;
+    --flavio: #1f4fa8;
+    --ok: #1d7a3a;
+    --alarm: #c62828;
+    --target: #8a6d00;
+  }
+  * { box-sizing: border-box; }
+  html { font-size: 19px; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.5; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); }
+  #status { display: flex; flex-wrap: wrap; gap: .4rem 1.4rem; align-items: center; padding: .55rem 1rem; font-size: .85rem; }
+  #status .item b { font-variant-numeric: tabular-nums; }
+  #status .dot { display: inline-block; width: .7em; height: .7em; border-radius: 50%; background: var(--muted); margin-right: .35em; }
+  #status.rec .dot { background: var(--ok); }
+  #status .bad { color: var(--alarm); font-weight: 600; }
+  #status.alarm { background: var(--alarm); color: #fff; }
+  #status.alarm .bad { color: #fff; }
+  #alarmMsg { font-weight: 700; display: none; }
+  #status.alarm #alarmMsg { display: inline; }
+  #toolbar { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; padding: .5rem 1rem; border-top: 1px solid var(--line); }
+  #search { flex: 1 1 14rem; font: inherit; font-size: .9rem; padding: .35rem .6rem; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  button { font: inherit; font-size: .8rem; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  .keys { font-size: .75rem; color: var(--muted); }
+  kbd { font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 0 .3em; background: var(--bg); }
+  main { max-width: 60rem; margin: 0 auto; padding: .8rem 1rem 6rem; }
+  .empty { color: var(--muted); padding: 2rem 0; text-align: center; }
+  .block { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line);
+           border-radius: 6px; padding: .5rem .8rem .6rem; margin-bottom: .5rem; cursor: pointer; }
+  .block.l1 { border-left-color: var(--lula); }
+  .block.l2 { border-left-color: var(--flavio); }
+  .block.lM { opacity: .45; }
+  .block.target { outline: 2px solid var(--target); outline-offset: 1px; }
+  .meta { display: flex; align-items: center; gap: .7rem; font-size: .78rem; color: var(--muted); }
+  .time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
+  .spk { font-weight: 700; }
+  .l1 .spk { color: var(--lula); }
+  .l2 .spk { color: var(--flavio); }
+  .meta button { padding: .1rem .55rem; font-size: .72rem; }
+  .meta button:first-of-type { margin-left: auto; }
+  .text { font-size: 1.05rem; margin-top: .15rem; overflow-wrap: anywhere; }
+  .text mark { background: var(--hl); color: inherit; border-radius: 3px; padding: 0 .1em; }
+  .silent .text { color: var(--muted); font-style: italic; }
+  .failed { border-color: var(--alarm); background: #fff5f4; }
+  .failed .text { color: var(--alarm); font-size: .9rem; }
+  .hint { font-size: .7rem; font-weight: 600; border: 1px solid var(--line); border-radius: 4px; padding: 0 .35em; color: var(--muted); }
+  .block.suggest-1 { border-left: 4px dashed var(--lula); }
+  .block.suggest-2 { border-left: 4px dashed var(--flavio); }
+  .block.suggest-M { border-left: 4px dashed var(--muted); }
+  .sugg { font-size: .72rem; font-style: italic; }
+  .live .text { color: #444; }
+  .live .time::after { content: " ● ao vivo"; font-weight: 400; color: var(--ok); }
+  .send { font-size: .7rem; font-weight: 600; border-radius: 4px; padding: 0 .4em; }
+  .send-waiting, .send-queued, .send-error, .send-auth { background: #fff4d6; color: #7a5a00; }
+  .send-sent, .send-skipped { background: #e3f4e8; color: var(--ok); }
+  .send-failed { background: #fde2e0; color: var(--alarm); }
+  .edited-tag { font-size: .7rem; font-style: italic; color: var(--muted); }
+  .editor textarea { width: 100%; min-height: 4.5em; font: inherit; font-size: 1.05rem; line-height: 1.5;
+                     padding: .35rem .5rem; border: 2px solid var(--target); border-radius: 6px; resize: vertical; }
+  .editor .row { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .35rem; align-items: center; }
+  .editor .row .tip { font-size: .72rem; color: var(--muted); margin-left: auto; }
+  .editor .save { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .err { font-size: .75rem; color: var(--muted); margin-top: .2rem; overflow-wrap: anywhere; }
+  #jump { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%); display: none;
+          font-size: .9rem; padding: .5rem 1.1rem; background: var(--ink); color: #fff; border: 0; border-radius: 999px;
+          box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+  #toast { position: fixed; top: .6rem; right: .8rem; z-index: 3; background: var(--ink); color: #fff; padding: .35rem .8rem;
+           border-radius: 6px; font-size: .8rem; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <div id="status">
+    <span class="item"><span class="dot"></span><b id="rec">conectando…</b></span>
+    <span class="item">Último trecho <b id="lastChunk">–</b></span>
+    <span class="item">Última transcrição <b id="lastOk">–</b></span>
+    <span class="item">Lacunas <b id="failed">0</b></span>
+    <span class="item">Soniox <b id="ws">–</b></span>
+    <span class="item" id="platItem" hidden>Plataforma <b id="plat">–</b></span>
+    <span id="alarmMsg"></span>
+  </div>
+  <div id="toolbar">
+    <input id="search" type="search" placeholder="Filtrar blocos…" autocomplete="off">
+    <button id="copyAll">Copiar Lula + Flávio</button>
+    <span class="keys"><kbd>1</kbd> Lula · <kbd>2</kbd> Flávio · <kbd>M</kbd> mediador · <kbd>0</kbd> limpar · <kbd>S</kbd> enviar · <kbd>E</kbd> editar ·
+      <kbd>↑</kbd><kbd>↓</kbd> navegar · <kbd>Esc</kbd> mais recente</span>
+  </div>
+</header>
+<main id="blocks"><div class="empty" id="empty">Nenhum bloco ainda. Aguardando o gravador…</div></main>
+<button id="jump">Ir para o mais recente ↓</button>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const NAMES = { "1": "Lula", "2": "Flávio", "M": "Mediador" };
+const POLL_MS = 2000;
+const STALE_SECONDS = 60;
+
+const $ = (sel) => document.querySelector(sel);
+const container = $("#blocks");
+const rendered = new Map();   // id -> { el, sig }
+let blocks = [];
+let labels = {};
+let platform = null;
+let sendByBlock = new Map();  // block id -> outbox item covering it
+let editingId = null;         // block open in the text editor
+const SEND_TEXT = { waiting: "envia quando finalizar", queued: "na fila", error: "tentando de novo", auth: "precisa de login", sent: "enviado", skipped: "já estava lá", failed: "falha no envio" };
+const WS_TEXT = { starting: "iniciando", connecting: "conectando", connected: "conectado", reconnecting: "reconectando",
+  rotating: "renovando sessão", finishing: "finalizando", closed: "encerrado" };
+let selectedId = null;        // null = keyboard acts on the latest visible block
+let follow = true;            // auto-scroll while the operator is at the bottom
+let unseen = 0;
+
+// --- highlighting -----------------------------------------------------------
+const MONTHS = "janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro";
+const SCALE = "(?:milhões|milhão|mil|bilhões|bilhão|trilhões|trilhão)(?!\\p{L})";
+const NUM = "\\d+(?:[.,]\\d+)*";
+const HL_RE = new RegExp([
+  `\\d{1,2}º?\\s+de\\s+(?:${MONTHS})(?:\\s+de\\s+\\d{4})?`,   // 1º de janeiro de 2023
+  `\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?`,                           // 15/08/2026
+  `R\\$\\s?${NUM}(?:\\s+(?:${SCALE}))?`,                       // R$ 50 bilhões
+  `${NUM}\\s?(?:%|por\\s+cento)`,                              // 8,1%
+  `\\p{L}+\\s+por\\s+cento`,                                   // quarenta por cento
+  `${NUM}(?:\\s+(?:${SCALE}))?`,                               // 2022, 2 milhões
+].join("|"), "giu");
+
+function highlighted(text) {
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  for (const m of text.matchAll(HL_RE)) {
+    if (m.index > last) frag.append(text.slice(last, m.index));
+    const mark = document.createElement("mark");
+    mark.textContent = m[0];
+    frag.append(mark);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) frag.append(text.slice(last));
+  return frag;
+}
+
+// --- helpers ------------------------------------------------------------------
+const hms = (iso) => (iso ? iso.slice(11, 19) : "–");
+const fold = (s) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 1500);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.append(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
+function lineFor(b) {
+  const name = NAMES[labels[b.id]];
+  return `[${hms(b.start)}] ${name ? name + ": " : ""}${b.text}`;
+}
+
+function atBottom() {
+  return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 60;
+}
+
+function scrollToLatest() {
+  window.scrollTo(0, document.documentElement.scrollHeight);
+  follow = true;
+  unseen = 0;
+  updateJump();
+}
+
+function updateJump() {
+  const btn = $("#jump");
+  btn.style.display = follow ? "none" : "block";
+  btn.textContent = unseen ? `Ir para o mais recente (${unseen} novos) ↓` : "Ir para o mais recente ↓";
+}
+
+// --- rendering ----------------------------------------------------------------
+function buildBlock(b, label, suggestion) {
+  const el = document.createElement("div");
+  el.className = `block ${b.status}` + (label ? ` l${label}` : "") + (b.final === false ? " live" : "");
+  if (suggestion) el.classList.add(`suggest-${suggestion}`);
+  el.dataset.id = b.id;
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const time = document.createElement("span");
+  time.className = "time";
+  time.textContent = hms(b.start);
+  const spk = document.createElement("span");
+  spk.className = "spk";
+  spk.textContent = NAMES[label] || "";
+  meta.append(time, spk);
+  if (b.speaker_hint) {
+    // Soniox diarization: a hint only, never written to labels.json.
+    const hint = document.createElement("span");
+    hint.className = "hint";
+    hint.textContent = `S${b.speaker_hint}`;
+    meta.append(hint);
+    if (suggestion) {
+      const sugg = document.createElement("span");
+      sugg.className = "sugg";
+      sugg.textContent = `→ ${NAMES[suggestion]}?`;
+      meta.append(sugg);
+    }
+  }
+
+  const text = document.createElement("div");
+  text.className = "text";
+  if (b.status === "failed" && b.id.startsWith("gap-")) {
+    text.textContent = b.error;
+    el.append(meta, text);
+    return el;
+  }
+  if (!b.text) {
+    el.classList.add("silent");
+    text.textContent = "(sem fala)";
+  } else if (b.id === editingId) {
+    el.append(meta, buildEditor(b));
+    return el;
+  } else {
+    text.append(highlighted(b.text));
+    if (b.edited) {
+      const tag = document.createElement("span");
+      tag.className = "edited-tag";
+      tag.textContent = "editado";
+      tag.title = `Transcrito: ${b.original_text}`;
+      meta.append(tag);
+    }
+    const sent = sendByBlock.get(b.id);
+    if (sent) {
+      const badge = document.createElement("span");
+      badge.className = `send send-${sent.status}`;
+      badge.textContent = SEND_TEXT[sent.status] || sent.status;
+      if (sent.error) badge.title = sent.error;
+      meta.append(badge);
+    }
+    if (b.final !== false) {
+      const edit = document.createElement("button");
+      edit.textContent = "Editar";
+      edit.title = "Editar o texto ou mover parte dele para o bloco seguinte/anterior (tecla E)";
+      edit.addEventListener("click", (ev) => { ev.stopPropagation(); openEditor(b.id); });
+      meta.append(edit);
+    }
+    if (platform?.configured && (label === "1" || label === "2") && !alreadySent(b, label)) {
+      const send = document.createElement("button");
+      send.textContent = sent ? "Reenviar" : "Enviar";
+      send.title = "Enviar este bloco para a plataforma (tecla S)";
+      send.addEventListener("click", (ev) => { ev.stopPropagation(); sendBlock(b.id); });
+      meta.append(send);
+    }
+    const copy = document.createElement("button");
+    copy.className = "copy";
+    copy.textContent = "Copiar";
+    copy.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      copyText(lineFor(b)).then(() => toast("Bloco copiado"));
+    });
+    meta.append(copy);
+  }
+  el.append(meta, text);
+  return el;
+}
+
+function matches(b, q) {
+  if (!q) return true;
+  return fold(`${b.text || ""} ${NAMES[labels[b.id]] || ""} ${hms(b.start)}`).includes(q);
+}
+
+function render() {
+  const wasAtBottom = follow;
+  const q = fold($("#search").value.trim());
+  let added = 0;
+  const lastLabelByHint = new Map();  // "session:speaker" -> label of the latest labelled block
+  for (const b of blocks) {
+    const label = labels[b.id] || "";
+    const hintKey = b.speaker_hint ? `${b.id.split("-")[1]}:${b.speaker_hint}` : null;
+    let suggestion = "";
+    if (hintKey) {
+      if (label) lastLabelByHint.set(hintKey, label);
+      else suggestion = lastLabelByHint.get(hintKey) || "";
+    }
+    const sent = sendByBlock.get(b.id);
+    const sig = JSON.stringify([b.status, b.text, b.error, label, b.final, b.speaker_hint, suggestion, b.edited, b.id === editingId,
+      sent?.status, sent?.error, !!platform?.configured]);
+    const cur = rendered.get(b.id);
+    if (!cur) {
+      const el = buildBlock(b, label, suggestion);
+      container.append(el);
+      rendered.set(b.id, { el, sig });
+      added++;
+    } else if (cur.sig !== sig && !(b.id === editingId && cur.el.querySelector(".editor"))) {
+      // (a block whose editor is open is left alone, so polling never wipes what is being typed)
+      const el = buildBlock(b, label, suggestion);
+      cur.el.replaceWith(el);
+      rendered.set(b.id, { el, sig });
+    }
+    // A Soniox block whose only (non-final) text was dropped on a reconnect; its audio was re-sent.
+    const superseded = b.final === true && b.status === "ok" && !b.text;
+    const el = rendered.get(b.id).el;
+    el.hidden = superseded || !matches(b, q);
+  }
+  $("#empty").style.display = blocks.length ? "none" : "block";
+  markTarget();
+  if (wasAtBottom) {
+    scrollToLatest();
+  } else {
+    unseen += added;
+    updateJump();
+  }
+}
+
+function visibleIds() {
+  return blocks.map((b) => b.id).filter((id) => !rendered.get(id)?.el.hidden);
+}
+
+function targetId() {
+  if (selectedId && rendered.has(selectedId) && !rendered.get(selectedId).el.hidden) return selectedId;
+  const ids = visibleIds();
+  return ids[ids.length - 1] || null;
+}
+
+function markTarget() {
+  const id = targetId();
+  for (const [bid, { el }] of rendered) el.classList.toggle("target", bid === id);
+}
+
+// --- status bar ---------------------------------------------------------------
+function renderStatus(s) {
+  const bar = $("#status");
+  $("#rec").textContent = s.recording ? "Gravando" : "Sem gravação";
+  bar.classList.toggle("rec", s.recording);
+  const ago = s.seconds_since_chunk;
+  $("#lastChunk").textContent = s.last_chunk_at ? `${hms(s.last_chunk_at)} (há ${ago}s)` : "–";
+  $("#lastOk").textContent = hms(s.last_ok_at);
+  $("#failed").textContent = s.failed;
+  $("#failed").classList.toggle("bad", s.failed > 0);
+  $("#ws").textContent = (WS_TEXT[s.ws_state] || s.ws_state || "–") + (s.backlog_s > 1 ? ` (buffer ${s.backlog_s}s)` : "") +
+    (s.reconnects ? ` · ${s.reconnects} reconexões` : "");
+  const wsOk = ["connected", "rotating", "finishing"].includes(s.ws_state);
+
+  let alarm = "";
+  if (!s.recorder_alive) alarm = "GRAVADOR PARADO";
+  else if (!s.recording) alarm = "FFMPEG NÃO ESTÁ CAPTURANDO" + (s.last_error ? ` (${s.last_error})` : "");
+  else if (!wsOk) alarm = `SONIOX ${String(WS_TEXT[s.ws_state] || s.ws_state).toUpperCase()}` +
+    (s.ws_error ? ` (${s.ws_error})` : "") + " — o áudio está guardado e arquivado";
+  else if (ago != null && ago > STALE_SECONDS) alarm = `SEM TEXTO NOVO HÁ ${ago}s`;
+  $("#alarmMsg").textContent = alarm;
+  bar.classList.toggle("alarm", !!alarm);
+}
+
+function renderUnreachable() {
+  $("#rec").textContent = "Servidor da interface fora do ar";
+  $("#alarmMsg").textContent = "Reinicie o server.py (a gravação não é afetada)";
+  $("#status").classList.add("alarm");
+  $("#status").classList.remove("rec");
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/state", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    blocks = data.blocks;
+    labels = data.labels;
+    platform = data.platform;
+    sendByBlock = new Map();
+    for (const item of platform?.items || []) for (const id of item.blockIds) sendByBlock.set(id, item);
+    renderPlatform();
+    renderStatus(data.status);
+    render();
+  } catch {
+    renderUnreachable();
+  } finally {
+    setTimeout(poll, POLL_MS);
+  }
+}
+
+// --- sending to the platform ------------------------------------------------------
+function renderPlatform() {
+  const show = !!platform && (platform.configured || platform.missing.length < 5);
+  $("#platItem").hidden = !show;
+  if (!show) return;
+  const c = platform.counts || {};
+  const waiting = (c.queued || 0) + (c.error || 0) + (c.auth || 0);
+  let txt = !platform.configured ? `não configurada (${platform.missing.join(", ")})`
+    : !platform.logged_in_as ? "sem login"
+    : `${platform.logged_in_as} · enviados ${(c.sent || 0) + (c.skipped || 0)}` + (waiting ? ` · aguardando ${waiting}` : "") +
+      (c.failed ? ` · falhas ${c.failed}` : "");
+  $("#plat").textContent = txt;
+  $("#plat").classList.toggle("bad", !!(c.failed || c.auth || (platform.configured && !platform.logged_in_as)));
+  $("#plat").title = platform.last_error || "";
+}
+
+// Sends the block as it is (one block = one draft). The platform organises
+// drafts into speeches; here the operator only chooses who is speaking.
+async function sendBlock(id) {
+  const b = blocks.find((x) => x.id === id);
+  const label = labels[id];
+  if (!b || !(label === "1" || label === "2")) return toast("Rotule o bloco com 1 (Lula) ou 2 (Flávio) antes");
+  const prev = sendByBlock.get(id);
+  if (alreadySent(b, label)) return toast(`Bloco ${SEND_TEXT[prev.status] || prev.status}`);
+  try {
+    const res = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blockIds: [id] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    sendByBlock.set(id, { status: data.status, label, blockIds: [id], text: data.status === "waiting" ? null : b.text });
+    render();
+    toast(data.status === "waiting" ? `${NAMES[label]}: envia quando finalizar` :
+      prev ? `Reenviado como ${NAMES[label]}` : `Na fila: ${NAMES[label]}`);
+    if (selectedId === id) moveSelection(1);
+  } catch (e) {
+    toast(`Não foi possível enviar: ${e.message}`);
+  }
+}
+
+// Same speaker and same text already queued or sent (an edit or relabel allows a resend).
+function alreadySent(b, label) {
+  const prev = sendByBlock.get(b.id);
+  return !!prev && prev.label === label && prev.status !== "failed" && (prev.text == null || prev.text === b.text);
+}
+
+// --- editing text ---------------------------------------------------------------------
+function neighbour(id, delta) {
+  const list = blocks.filter((b) => b.status === "ok" && !(b.final === true && !b.text && !b.edited));
+  const i = list.findIndex((b) => b.id === id);
+  return i < 0 ? null : list[i + delta] || null;
+}
+
+function openEditor(id) {
+  const b = blocks.find((x) => x.id === id);
+  if (!b || b.status !== "ok" || b.final === false) return toast("Espere o bloco finalizar para editar");
+  editingId = id;
+  selectedId = id;
+  render();
+  const ta = rendered.get(id)?.el.querySelector("textarea");
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+function closeEditor() {
+  editingId = null;
+  render();
+}
+
+async function saveEdits(edits, message) {
+  try {
+    const res = await fetch("/api/edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ edits }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+    for (const [bid, t] of Object.entries(edits)) {
+      const b = blocks.find((x) => x.id === bid);
+      if (b) Object.assign(b, t === null ? { text: b.original_text ?? b.text, edited: false } : { text: t, edited: true });
+    }
+    editingId = null;
+    render();
+    toast(message);
+    return true;
+  } catch (e) {
+    toast(`Não foi possível salvar: ${e.message}`);
+    return false;
+  }
+}
+
+function buildEditor(b) {
+  const box = document.createElement("div");
+  box.className = "editor";
+  box.addEventListener("click", (ev) => ev.stopPropagation());
+  const ta = document.createElement("textarea");
+  ta.value = b.text;
+  const row = document.createElement("div");
+  row.className = "row";
+  const btn = (label, fn, cls) => {
+    const x = document.createElement("button");
+    x.textContent = label;
+    if (cls) x.className = cls;
+    x.addEventListener("click", (ev) => { ev.stopPropagation(); fn(); });
+    row.append(x);
+  };
+  const join = (a, c) => [a.trim(), c.trim()].filter(Boolean).join(" ");
+  btn("Salvar", () => saveEdits({ [b.id]: ta.value }, "Texto salvo"), "save");
+  btn("Cancelar", closeEditor);
+  btn("Mover do cursor em diante → próximo bloco", () => {
+    const next = neighbour(b.id, 1);
+    if (!next) return toast("Ainda não há próximo bloco");
+    if (next.final === false) return toast("O próximo bloco ainda está ao vivo; espere finalizar");
+    const pos = ta.selectionStart;
+    saveEdits({ [b.id]: ta.value.slice(0, pos).trim(), [next.id]: join(ta.value.slice(pos), next.text) },
+      "Movido para o próximo bloco");
+  });
+  btn("← Mover até o cursor → bloco anterior", () => {
+    const prev = neighbour(b.id, -1);
+    if (!prev) return toast("Não há bloco anterior");
+    const pos = ta.selectionStart;
+    saveEdits({ [b.id]: ta.value.slice(pos).trim(), [prev.id]: join(prev.text, ta.value.slice(0, pos)) },
+      "Movido para o bloco anterior");
+  });
+  if (b.edited) btn("Restaurar original", () => saveEdits({ [b.id]: null }, "Texto original restaurado"));
+  const tip = document.createElement("span");
+  tip.className = "tip";
+  tip.textContent = "Enter salva · Esc cancela · ponha o cursor onde começa a fala do outro";
+  row.append(tip);
+  ta.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); saveEdits({ [b.id]: ta.value }, "Texto salvo"); }
+    else if (ev.key === "Escape") { ev.preventDefault(); closeEditor(); }
+    ev.stopPropagation();  // typing must not trigger the 1/2/M/S shortcuts
+  });
+  box.append(ta, row);
+  return box;
+}
+
+// --- labelling ----------------------------------------------------------------
+async function setLabel(id, label) {
+  const previous = labels[id];
+  if (label) labels[id] = label; else delete labels[id];
+  render();
+  try {
+    const res = await fetch("/api/label", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, label }),
+    });
+    if (!res.ok) throw new Error(res.status);
+  } catch {
+    if (previous) labels[id] = previous; else delete labels[id];
+    render();
+    toast("Não foi possível salvar o rótulo");
+  }
+}
+
+function moveSelection(delta) {
+  const ids = visibleIds();
+  if (!ids.length) return;
+  const cur = ids.indexOf(targetId());
+  const next = Math.max(0, Math.min(ids.length - 1, cur + delta));
+  // Moving past the newest block goes back to "follow latest" mode.
+  selectedId = delta > 0 && cur === ids.length - 1 ? null : ids[next];
+  markTarget();
+  const id = targetId();
+  if (id) rendered.get(id).el.scrollIntoView({ block: "nearest" });
+}
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.target === $("#search")) {
+    if (ev.key === "Escape") { ev.target.value = ""; ev.target.blur(); render(); }
+    return;
+  }
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const key = ev.key.toUpperCase();
+  const id = targetId();
+  if (key === "1" || key === "2" || key === "M") {
+    if (id) setLabel(id, key);
+  } else if (key === "0" || key === "BACKSPACE" || key === "DELETE") {
+    if (id) setLabel(id, "");
+  } else if (key === "E") {
+    if (id) openEditor(id);
+  } else if (key === "S") {
+    if (!platform?.configured) toast("Plataforma não configurada");
+    else if (id) sendBlock(id);
+  } else if (key === "ARROWUP" || key === "K") {
+    moveSelection(-1);
+  } else if (key === "ARROWDOWN" || key === "J") {
+    moveSelection(1);
+  } else if (key === "ESCAPE") {
+    selectedId = null;
+    markTarget();
+    scrollToLatest();
+  } else if (key === "/") {
+    $("#search").focus();
+  } else {
+    return;
+  }
+  ev.preventDefault();
+});
+
+container.addEventListener("dblclick", (ev) => {
+  const el = ev.target.closest(".block");
+  if (el && !ev.target.closest(".editor")) { window.getSelection()?.removeAllRanges(); openEditor(el.dataset.id); }
+});
+
+container.addEventListener("click", (ev) => {
+  const el = ev.target.closest(".block");
+  if (!el || window.getSelection().toString()) return;
+  selectedId = selectedId === el.dataset.id ? null : el.dataset.id;
+  markTarget();
+});
+
+$("#copyAll").addEventListener("click", () => {
+  const lines = blocks
+    .filter((b) => b.status === "ok" && b.text && (labels[b.id] === "1" || labels[b.id] === "2"))
+    .map(lineFor);
+  if (!lines.length) return toast("Nenhum bloco rotulado com 1 ou 2 ainda");
+  copyText(lines.join("\n")).then(() => toast(`${lines.length} blocos copiados`));
+});
+
+$("#search").addEventListener("input", render);
+$("#jump").addEventListener("click", scrollToLatest);
+window.addEventListener("scroll", () => {
+  follow = atBottom();
+  if (follow) unseen = 0;
+  updateJump();
+}, { passive: true });
+
+poll();
+</script>
+</body>
+</html>

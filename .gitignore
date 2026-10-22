@@ -1,0 +1,22 @@
+# recordings, transcripts, labels, edits, send queue
+data/
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.aiff
+*.jsonl
+
+# internal research material
+*.xlsx
+*.csv
+
+# secrets
+.env
+.env.*
+!.env.example
+.aletheia_session.json*
+
+__pycache__/
+*.pyc
+.DS_Store
