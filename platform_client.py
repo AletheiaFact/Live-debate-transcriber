@@ -298,6 +298,7 @@ class Outbox:
         for i in items:
             counts[i["status"]] = counts.get(i["status"], 0) + 1
         return {
+            "target": "platform",
             "configured": not self.cfg.missing(),
             "missing": self.cfg.missing(),
             "logged_in_as": sess.get("email") if sess else None,

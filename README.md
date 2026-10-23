@@ -220,7 +220,7 @@ Run this read-only check before starting `server.py`:
 python sheets_client.py
 ```
 
-The tab must have the following headers in **A6:G6**. Each selected block becomes
+The tab must have the following headers in **A6:F6**. Each selected block becomes
 one row, starting at **row 7** when the template has no transcript data:
 
 | Column | Value sent |
@@ -229,9 +229,8 @@ one row, starting at **row 7** when the template has no transcript data:
 | B — Fim | Elapsed end, `HH:MM:SS` |
 | C — Etiqueta | Operator's speaker label: Lula or Flávio |
 | D — Transcrição | Final text, including operator corrections and merges |
-| E — Time sugerido (IA) | Blank; classification is not implemented |
-| F — Status | `Novo` |
-| G — Colaborador | Left for reviewers |
+| E — Status | `Novo` |
+| F — Colaborador | Left for reviewers |
 
 Set **Início do debate** and its date in the operator page before sending. Sheet
 timestamps always use elapsed debate time, even if the page displays clock time.
@@ -267,13 +266,19 @@ local session directory.
 If `SEND_TARGET` is omitted, a configured `SPREADSHEET_ID` selects Sheets;
 otherwise the server uses the existing Aletheia integration.
 
+To send every block to both destinations with the same **Enviar** button, set
+`SEND_TARGET=sheets,platform` and configure both. Sheets stays the primary: it
+locks sent blocks and drives each block's status, while the platform's progress
+appears as a second item in the status bar. Sending is refused until both are
+configured. If Sheets rejects a block, nothing is queued for the platform either.
+
 ## Sending blocks to Aletheia
 
 The existing Aletheia integration sends each selected block (including a merged
 block) as a **draft** on the platform's debate. The operator chooses the speaker,
 corrects the text and can combine adjacent blocks before sending. Removing
 duplicates and choosing claims happen on the platform. Set `SEND_TARGET=platform`
-to use this integration. Only one destination is active at a time.
+to use this integration alone, or `SEND_TARGET=sheets,platform` to send to both.
 
 1. In `.env`, set `ALETHEIA_URL`, `ORY_URL` (the platform's Ory project URL),
    `ALETHEIA_DEBATE_ID`, `ALETHEIA_PERSONALITY_LULA`,

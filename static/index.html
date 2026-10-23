@@ -97,6 +97,7 @@
     <span class="item">Lacunas <b id="failed">0</b></span>
     <span class="item">Soniox <b id="ws">–</b></span>
     <span class="item" id="platItem" hidden><span id="destination">Plataforma</span> <b id="plat">–</b></span>
+    <span class="item" id="platItem2" hidden><span id="destination2">Plataforma</span> <b id="plat2">–</b></span>
     <span id="alarmMsg"></span>
   </div>
   <div id="toolbar">
@@ -134,6 +135,7 @@ let stateRequest = 0;
 let appliedStateRequest = 0;
 let labels = {};
 let platform = null;
+let extraDestinations = [];  // destinations that also receive every send; status bar only
 let sendByBlock = new Map();  // block id -> outbox item covering it
 const sendPending = new Set(); // disable immediately, before the POST finishes
 const sendUnconfirmed = new Set(); // POST and subsequent state check both lost
@@ -497,6 +499,7 @@ async function refreshState() {
     blocks = data.blocks;
     labels = data.labels;
     platform = data.platform;
+    extraDestinations = data.extra_destinations || [];
     if (!settingsPending) settings = data.settings || {};
     sessionStart = data.session_start;
     renderSettings();
@@ -521,27 +524,35 @@ async function poll() {
 
 // --- sending to the platform ------------------------------------------------------
 function renderPlatform() {
-  const show = !!platform && (isSheets() || platform.configured || platform.missing.length < 5);
-  $("#platItem").hidden = !show;
+  renderDestination(platform, "", false);
+  renderDestination(extraDestinations[0], "2", true);
+}
+
+// `always`: an extra destination is shown even when unconfigured, since sends are blocked until it is.
+function renderDestination(dest, suffix, always) {
+  const sheets = dest?.target === "sheets";
+  const show = !!dest && (always || sheets || dest.configured || dest.missing.length < 5);
+  $("#platItem" + suffix).hidden = !show;
   if (!show) return;
-  $("#destination").textContent = isSheets() ? "Planilha" : "Plataforma";
-  const c = platform.counts || {};
-  if (isSheets()) {
+  const value = $("#plat" + suffix);
+  $("#destination" + suffix).textContent = sheets ? "Planilha" : "Plataforma";
+  const c = dest.counts || {};
+  if (sheets) {
     const pending = (c.queued || 0) + (c.sending || 0) + (c.verifying || 0);
-    $("#plat").textContent = !platform.configured ? `não configurada (${platform.missing.join(", ")})`
+    value.textContent = !dest.configured ? `não configurada (${dest.missing.join(", ")})`
       : `enviados ${c.sent || 0}` + (pending ? ` · aguardando ${pending}` : "") + (c.failed ? ` · falhas ${c.failed}` : "");
-    $("#plat").classList.toggle("bad", !platform.configured || !!(c.failed || c.verifying));
-    $("#plat").title = [...(platform.items || [])].reverse().find(i => i.error)?.error || "";
+    value.classList.toggle("bad", !dest.configured || !!(c.failed || c.verifying));
+    value.title = [...(dest.items || [])].reverse().find(i => i.error)?.error || "";
     return;
   }
   const waiting = (c.queued || 0) + (c.error || 0) + (c.auth || 0);
-  let txt = !platform.configured ? `não configurada (${platform.missing.join(", ")})`
-    : !platform.logged_in_as ? "sem login"
-    : `${platform.logged_in_as} · enviados ${(c.sent || 0) + (c.skipped || 0)}` + (waiting ? ` · aguardando ${waiting}` : "") +
+  let txt = !dest.configured ? `não configurada (${dest.missing.join(", ")})`
+    : !dest.logged_in_as ? "sem login"
+    : `${dest.logged_in_as} · enviados ${(c.sent || 0) + (c.skipped || 0)}` + (waiting ? ` · aguardando ${waiting}` : "") +
       (c.failed ? ` · falhas ${c.failed}` : "");
-  $("#plat").textContent = txt;
-  $("#plat").classList.toggle("bad", !!(c.failed || c.auth || (platform.configured && !platform.logged_in_as)));
-  $("#plat").title = platform.last_error || "";
+  value.textContent = txt;
+  value.classList.toggle("bad", (always && !dest.configured) || !!(c.failed || c.auth || (dest.configured && !dest.logged_in_as)));
+  value.title = dest.last_error || "";
 }
 
 // Sends the block as it is (one block = one draft). The platform organises

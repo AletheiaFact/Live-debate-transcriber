@@ -71,7 +71,7 @@ class OperatorTests(unittest.TestCase):
         self.store.set_label("a", "1")
         body = json.dumps({"blockIds": ["a"]}).encode()
         responses = []
-        handler = SimpleNamespace(store=self.store, rfile=io.BytesIO(body),
+        handler = SimpleNamespace(store=self.store, extra_outboxes=[], rfile=io.BytesIO(body),
                                   outbox=SimpleNamespace(cfg=SimpleNamespace(missing=lambda: [])),
                                   _json=lambda code, data: responses.append((code, data)))
         Handler._send_speech(handler, len(body))

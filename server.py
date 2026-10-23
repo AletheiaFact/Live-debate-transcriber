@@ -5,8 +5,9 @@ Runs separately from recorder.py and only reads its files, except
 labels.json, edits.json, operator.json and send queues, which only this server writes.
 Text edits are kept apart from blocks.jsonl and applied on top of it.
 
-SEND_TARGET selects Google Sheets or the Aletheia platform in .env. Sending
-happens in a background thread and never touches the recorder.
+SEND_TARGET selects Google Sheets, the Aletheia platform, or both
+(sheets,platform) in .env. Sending happens in background threads and never
+touches the recorder.
 """
 
 import argparse
@@ -253,7 +254,8 @@ class Store:
 
 class Handler(BaseHTTPRequestHandler):
     store = None
-    outbox = None
+    outbox = None  # primary destination: drives block locks and per-block status in the UI
+    extra_outboxes = []  # further destinations that receive every send too
 
     def log_message(self, fmt, *args):
         pass  # polling every 2s would flood the terminal
@@ -287,6 +289,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             state = self.store.state()
             state["platform"] = self.outbox.state()
+            state["extra_destinations"] = [o.state() for o in self.extra_outboxes]
             self._json(200, state)
         else:
             self.send_error(404)
@@ -346,8 +349,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_speech(self, length):
         """Queue only finalized blocks labelled 1/2."""
-        if self.outbox.cfg.missing():
-            return self._json(400, {"error": "destino não configurado: " + ", ".join(self.outbox.cfg.missing())})
+        missing = [m for o in [self.outbox, *self.extra_outboxes] for m in o.cfg.missing()]
+        if missing:
+            return self._json(400, {"error": "destino não configurado: " + ", ".join(missing)})
         try:
             ids = json.loads(self.rfile.read(length))["blockIds"]
             if not isinstance(ids, list):
@@ -373,14 +377,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "espere o bloco finalizar para enviar"})
             if any(not b.get("text", "").strip() for b in blocks):
                 return self._json(400, {"error": "o bloco não tem texto"})
+            label = labels.pop()
             try:
-                if isinstance(self.outbox, sheets_client.Outbox):
-                    item = self.outbox.enqueue(labels.pop(), blocks, self.store.operator["settings"])
-                else:
-                    item = self.outbox.enqueue(labels.pop(), blocks, waiting=False)
+                # The primary goes first: if it rejects the block, nothing is queued anywhere.
+                settings = self.store.operator["settings"]
+                item = enqueue(self.outbox, label, blocks, settings)
+                for outbox in self.extra_outboxes:
+                    enqueue(outbox, label, blocks, settings)
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
         self._json(200, {"externalId": item["externalId"], "status": item["status"]})
+
+
+def enqueue(outbox, label, blocks, settings):
+    if isinstance(outbox, sheets_client.Outbox):
+        return outbox.enqueue(label, blocks, settings)
+    # Platform ids are deterministic, so a resend of a queued or sent block is a no-op there.
+    return outbox.enqueue(label, blocks, waiting=False)
 
 
 def _is_final(block):
@@ -412,15 +425,22 @@ def main():
     Handler.store = Store(args.data_dir)
     store = Handler.store
     target = os.environ.get("SEND_TARGET") or ("sheets" if os.environ.get("SPREADSHEET_ID") else "platform")
-    if target == "sheets":
-        Handler.outbox = sheets_client.Outbox(sheets_client.Config(), args.data_dir)
-        store.send_locked = Handler.outbox.locked
-    elif target == "platform":
-        Handler.outbox = platform_client.Outbox(
-            platform_client.Config(), args.data_dir, resolve=lambda ids: resolve_blocks(store, ids)
-        )
-    else:
-        sys.exit("SEND_TARGET must be sheets or platform")
+    targets = [t.strip() for t in target.split(",") if t.strip()]
+    if not targets or len(set(targets)) != len(targets) or not set(targets) <= {"sheets", "platform"}:
+        sys.exit("SEND_TARGET must be sheets, platform or sheets,platform")
+    # Sheets snapshots are immutable, so when Sheets is a destination it is the primary.
+    targets.sort(key=lambda t: t != "sheets")
+    outboxes = []
+    for t in targets:
+        if t == "sheets":
+            outboxes.append(sheets_client.Outbox(sheets_client.Config(), args.data_dir))
+            store.send_locked = outboxes[-1].locked
+        else:
+            outboxes.append(platform_client.Outbox(
+                platform_client.Config(), args.data_dir, resolve=lambda ids: resolve_blocks(store, ids)
+            ))
+    Handler.outbox, Handler.extra_outboxes = outboxes[0], outboxes[1:]
+    print("sending to: " + ", ".join(targets), flush=True)
     try:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     except OSError as e:

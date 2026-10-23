@@ -13,7 +13,7 @@ from datetime import datetime
 from platform_client import load_dotenv, now_iso
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Time sugerido (IA)", "Status", "Colaborador"]
+HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Status", "Colaborador"]
 NAMES = {"1": "Lula", "2": "Flávio"}
 RECEIPT_KEY = "ldt"
 LOCKED_STATUSES = {"queued", "sending", "verifying", "sent"}
@@ -48,7 +48,7 @@ def transcript_row(label, blocks, settings):
     if first.tzinfo is None or not isinstance(end_ms, (int, float)):
         raise ValueError("o bloco não tem horários completos de início e fim")
     return [elapsed(first.timestamp()), elapsed(end_ms / 1000), NAMES[label],
-            " ".join(b["text"].strip() for b in blocks), "", "Novo"]
+            " ".join(b["text"].strip() for b in blocks), "Novo"]
 
 
 class DeliveryUnknown(Exception):
@@ -84,9 +84,9 @@ class Client:
             raise ValueError(f"aba não encontrada: {self.cfg.tab}")
         quoted = "'" + self.cfg.tab.replace("'", "''") + "'"
         headers = api.values().get(spreadsheetId=self.cfg.spreadsheet_id,
-                                   range=quoted + "!A6:G6").execute(num_retries=0).get("values", [])
+                                   range=quoted + "!A6:F6").execute(num_retries=0).get("values", [])
         if headers != [HEADERS]:
-            raise ValueError("os cabeçalhos A6:G6 não correspondem ao modelo da transcrição")
+            raise ValueError("os cabeçalhos A6:F6 não correspondem ao modelo da transcrição")
         return tab["sheetId"]
 
     def receipt(self, item):
@@ -237,7 +237,7 @@ def main():
     if cfg.missing():
         raise SystemExit("Faltam variáveis no .env: " + ", ".join(cfg.missing()))
     Client(cfg).check()
-    print(f"OK: acesso à aba {cfg.tab}; cabeçalhos A6:G6 conferidos. Nenhum dado enviado.")
+    print(f"OK: acesso à aba {cfg.tab}; cabeçalhos A6:F6 conferidos. Nenhum dado enviado.")
 
 
 if __name__ == "__main__":

@@ -40,14 +40,14 @@ class QueueTests(unittest.TestCase):
     def send(self, ids):
         body = json.dumps({"blockIds": ids}).encode()
         responses = []
-        handler = SimpleNamespace(store=self.store, outbox=self.outbox, rfile=io.BytesIO(body),
-                                  _json=lambda code, data: responses.append((code, data)))
+        handler = SimpleNamespace(store=self.store, outbox=self.outbox, extra_outboxes=getattr(self, "extra", []),
+                                  rfile=io.BytesIO(body), _json=lambda code, data: responses.append((code, data)))
         Handler._send_speech(handler, len(body))
         return responses[0]
 
     def test_elapsed_timestamps_midnight_and_column_mapping(self):
         row = transcript_row("1", [self.store.state()["blocks"][1]], self.store.operator["settings"])
-        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "", "Novo"])
+        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "Novo"])
         self.assertFalse(self.store.operator["settings"]["show_minutage"])
         with self.assertRaises(ValueError):
             transcript_row("1", [self.store.state()["blocks"][1]], {})
@@ -62,6 +62,21 @@ class QueueTests(unittest.TestCase):
                 mutation()
         self.assertEqual(self.store.state()["blocks"][0]["text"], "=literal claim a")
         self.assertEqual(self.send(["b"])[0], 400)
+
+    def test_one_send_queues_both_destinations(self):
+        sent = []
+        missing = []
+        self.extra = [SimpleNamespace(cfg=SimpleNamespace(missing=lambda: missing),
+                                      enqueue=lambda label, blocks, waiting: sent.append((label, blocks)))]
+        missing.append("ALETHEIA_URL")
+        self.assertIn("ALETHEIA_URL", self.send(["b"])[1]["error"])
+        self.assertEqual((sent, self.outbox.items), ([], {}))
+        missing.clear()
+        self.assertEqual(self.send(["b"])[0], 200)
+        self.assertEqual([(label, [b["text"] for b in blocks]) for label, blocks in sent],
+                         [("1", ["=literal claim b"])])
+        self.assertEqual(self.send(["b"])[0], 400)  # Sheets rejects the resend before the platform sees it
+        self.assertEqual(len(sent), 1)
 
     def test_success_stays_locked_after_restart(self):
         self.send(["b"])
@@ -192,7 +207,7 @@ class ClientTests(unittest.TestCase):
             batchUpdate=self.batch,
         )
         self.item = {"spreadsheetId": "test-sheet", "tab": "Sheet1", "externalId": "stable-id", "metadataId": 10,
-                     "row": ["00:01:00", "00:01:07", "Lula", "=literal text", "", "Novo"]}
+                     "row": ["00:01:00", "00:01:07", "Lula", "=literal text", "Novo"]}
 
     def get_receipt(self, **kw):
         def read():
@@ -222,7 +237,7 @@ class ClientTests(unittest.TestCase):
         row = self.rows[0]
         self.assertEqual(row["fields"], "userEnteredValue")
         values = row["rows"][0]["values"]
-        self.assertEqual(len(values), 6)  # G and later columns are untouched
+        self.assertEqual(len(values), 5)  # F and later columns are untouched
         self.assertEqual(values[3], {"userEnteredValue": {"stringValue": "=literal text"}})
 
     def test_response_loss_recovers_without_second_append(self):
