@@ -36,6 +36,10 @@
   #search { flex: 1 1 14rem; font: inherit; font-size: .9rem; padding: .35rem .6rem; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
   button { font: inherit; font-size: .8rem; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); cursor: pointer; }
   button:hover { border-color: var(--muted); }
+  button:disabled { opacity: .45; cursor: default; }
+  .meta { flex-wrap: wrap; }
+  #timeControls { display: flex; flex-wrap: wrap; gap: .6rem 1rem; padding: .4rem 1rem; font-size: .8rem; }
+  #timeControls input { font: inherit; }
   .keys { font-size: .75rem; color: var(--muted); }
   kbd { font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 0 .3em; background: var(--bg); }
   main { max-width: 60rem; margin: 0 auto; padding: .8rem 1rem 6rem; }
@@ -66,7 +70,7 @@
   .live .text { color: #444; }
   .live .time::after { content: " ● ao vivo"; font-weight: 400; color: var(--ok); }
   .send { font-size: .7rem; font-weight: 600; border-radius: 4px; padding: 0 .4em; }
-  .send-waiting, .send-queued, .send-error, .send-auth { background: #fff4d6; color: #7a5a00; }
+  .send-waiting, .send-queued, .send-sending, .send-verifying, .send-error, .send-auth { background: #fff4d6; color: #7a5a00; }
   .send-sent, .send-skipped { background: #e3f4e8; color: var(--ok); }
   .send-failed { background: #fde2e0; color: var(--alarm); }
   .edited-tag { font-size: .7rem; font-style: italic; color: var(--muted); }
@@ -92,7 +96,7 @@
     <span class="item">Última transcrição <b id="lastOk">–</b></span>
     <span class="item">Lacunas <b id="failed">0</b></span>
     <span class="item">Soniox <b id="ws">–</b></span>
-    <span class="item" id="platItem" hidden>Plataforma <b id="plat">–</b></span>
+    <span class="item" id="platItem" hidden><span id="destination">Plataforma</span> <b id="plat">–</b></span>
     <span id="alarmMsg"></span>
   </div>
   <div id="toolbar">
@@ -100,6 +104,11 @@
     <button id="copyAll">Copiar Lula + Flávio</button>
     <span class="keys"><kbd>1</kbd> Lula · <kbd>2</kbd> Flávio · <kbd>M</kbd> mediador · <kbd>0</kbd> limpar · <kbd>S</kbd> enviar · <kbd>E</kbd> editar ·
       <kbd>↑</kbd><kbd>↓</kbd> navegar · <kbd>Esc</kbd> mais recente</span>
+  </div>
+  <div id="timeControls">
+    <label>Início do debate <input id="debateStart" type="time" step="1"></label>
+    <label>Data <input id="debateDate" type="date"></label>
+    <label><input id="showMinutage" type="checkbox"> Mostrar minutagem</label>
   </div>
 </header>
 <main id="blocks"><div class="empty" id="empty">Nenhum bloco ainda. Aguardando o gravador…</div></main>
@@ -117,11 +126,20 @@ const $ = (sel) => document.querySelector(sel);
 const container = $("#blocks");
 const rendered = new Map();   // id -> { el, sig }
 let blocks = [];
+let settings = {};
+let sessionStart = null;
+let settingsPending = false;
+let stateRevision = 0; // ignore polls started before a send was acknowledged
+let stateRequest = 0;
+let appliedStateRequest = 0;
 let labels = {};
 let platform = null;
 let sendByBlock = new Map();  // block id -> outbox item covering it
+const sendPending = new Set(); // disable immediately, before the POST finishes
+const sendUnconfirmed = new Set(); // POST and subsequent state check both lost
+const labelPending = new Set();
 let editingId = null;         // block open in the text editor
-const SEND_TEXT = { waiting: "envia quando finalizar", queued: "na fila", error: "tentando de novo", auth: "precisa de login", sent: "enviado", skipped: "já estava lá", failed: "falha no envio" };
+const SEND_TEXT = { waiting: "envia quando finalizar", queued: "na fila", sending: "enviando…", verifying: "verificando envio…", error: "tentando de novo", auth: "precisa de login", sent: "enviado", skipped: "já estava lá", failed: "falha no envio" };
 const WS_TEXT = { starting: "iniciando", connecting: "conectando", connected: "conectado", reconnecting: "reconectando",
   rotating: "renovando sessão", finishing: "finalizando", closed: "encerrado" };
 let selectedId = null;        // null = keyboard acts on the latest visible block
@@ -159,6 +177,62 @@ function highlighted(text) {
 const hms = (iso) => (iso ? iso.slice(11, 19) : "–");
 const fold = (s) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
+function blockTime(b) {
+  if (!settings.show_minutage || !settings.debate_start) return hms(b.start);
+  const seconds = Math.round((Date.parse(b.start) - Date.parse(settings.debate_start)) / 1000);
+  const n = Math.abs(seconds);
+  return (seconds < 0 ? "−" : "") + [Math.floor(n / 3600), Math.floor(n / 60) % 60, n % 60]
+    .map(x => String(x).padStart(2, "0")).join(":");
+}
+
+function renderSettings() {
+  if (settingsPending) return;
+  const iso = settings.debate_start || sessionStart || "";
+  if (document.activeElement !== $("#debateDate")) $("#debateDate").value = iso.slice(0, 10);
+  if (document.activeElement !== $("#debateStart")) $("#debateStart").value = settings.debate_start ? hms(iso) : "";
+  $("#showMinutage").checked = !!settings.show_minutage;
+  $("#showMinutage").disabled = !settings.debate_start;
+}
+
+async function saveSettings() {
+  const time = $("#debateStart").value;
+  const date = $("#debateDate").value;
+  if (time && !date) return toast("Informe a data do debate");
+  // Use the recording's timezone, including when the browser is on another machine.
+  const zone = (settings.debate_start || sessionStart || "").match(/(Z|[+-]\d{2}:\d{2})$/)?.[0];
+  const offset = -new Date().getTimezoneOffset();
+  const fallbackZone = (offset >= 0 ? "+" : "-") + [Math.floor(Math.abs(offset) / 60), Math.abs(offset) % 60]
+    .map(x => String(x).padStart(2, "0")).join(":");
+  const next = { debate_start: time ? `${date}T${time.length === 5 ? time + ":00" : time}${zone || fallbackZone}` : "",
+    show_minutage: !!time && $("#showMinutage").checked };
+  settingsPending = true;
+  try {
+    await postAction("settings", next);
+    settings = next;
+    render();
+  } catch (e) { toast(`Não foi possível salvar: ${e.message}`); }
+  finally { settingsPending = false; renderSettings(); }
+}
+
+async function postAction(action, body) {
+  const res = await fetch(`/api/${action}`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.status);
+  return data;
+}
+
+async function changeMerge(b, undo = false) {
+  if (isLocked(b.id) || (!undo && isLocked(neighbour(b.id, 1)?.id))) return toast("Bloco em envio ou enviado à planilha");
+  if (editingId) return toast("Salve ou cancele a edição antes de combinar");
+  if (undo && b.merged_edited && !confirm("Descombinar descartará as edições feitas no texto combinado. Os blocos e suas correções anteriores serão recuperados. Continuar?")) return;
+  try {
+    const data = await postAction(undo ? "unmerge" : "merge", {id: b.id, confirmed: true});
+    selectedId = data.id;
+    await refreshState();
+    toast(undo ? "Blocos recuperados" : "Blocos combinados");
+  } catch (e) { toast(e.message); }
+}
+
 function toast(msg) {
   const t = $("#toast");
   t.textContent = msg;
@@ -182,7 +256,7 @@ async function copyText(text) {
 
 function lineFor(b) {
   const name = NAMES[labels[b.id]];
-  return `[${hms(b.start)}] ${name ? name + ": " : ""}${b.text}`;
+  return `[${blockTime(b)}] ${name ? name + ": " : ""}${b.text}`;
 }
 
 function atBottom() {
@@ -213,11 +287,16 @@ function buildBlock(b, label, suggestion) {
   meta.className = "meta";
   const time = document.createElement("span");
   time.className = "time";
-  time.textContent = hms(b.start);
+  time.textContent = blockTime(b);
   const spk = document.createElement("span");
   spk.className = "spk";
   spk.textContent = NAMES[label] || "";
   meta.append(time, spk);
+  if (b.merged) {
+    const tag = document.createElement("span");
+    tag.textContent = `${b.source_ids.length} blocos combinados`;
+    meta.append(tag);
+  }
   if (b.speaker_hint) {
     // Soniox diarization: a hint only, never written to labels.json.
     const hint = document.createElement("span");
@@ -239,7 +318,7 @@ function buildBlock(b, label, suggestion) {
     el.append(meta, text);
     return el;
   }
-  if (!b.text) {
+  if (!b.text && !b.edited && !b.merged && b.id !== editingId) {
     el.classList.add("silent");
     text.textContent = "(sem fala)";
   } else if (b.id === editingId) {
@@ -254,25 +333,41 @@ function buildBlock(b, label, suggestion) {
       tag.title = `Transcrito: ${b.original_text}`;
       meta.append(tag);
     }
-    const sent = sendByBlock.get(b.id);
+    const sent = sendPending.has(b.id) ? {status: "sending"} : sendUnconfirmed.has(b.id) ? {status: "verifying"} : sendByBlock.get(b.id);
     if (sent) {
       const badge = document.createElement("span");
       badge.className = `send send-${sent.status}`;
-      badge.textContent = SEND_TEXT[sent.status] || sent.status;
+      badge.textContent = isSheets() && sent.status === "sent" ? "enviado à planilha" : SEND_TEXT[sent.status] || sent.status;
       if (sent.error) badge.title = sent.error;
       meta.append(badge);
     }
     if (b.final !== false) {
       const edit = document.createElement("button");
       edit.textContent = "Editar";
+      edit.disabled = isLocked(b.id);
       edit.title = "Editar o texto ou mover parte dele para o bloco seguinte/anterior (tecla E)";
       edit.addEventListener("click", (ev) => { ev.stopPropagation(); openEditor(b.id); });
       meta.append(edit);
+      const next = neighbour(b.id, 1);
+      const merge = document.createElement("button");
+      merge.textContent = "Combinar ↓";
+      merge.disabled = isLocked(b.id) || isLocked(next?.id) || !next || next.final === false || (label && labels[next.id] && label !== labels[next.id]);
+      merge.title = "Combinar com o próximo bloco finalizado do mesmo falante";
+      merge.addEventListener("click", ev => { ev.stopPropagation(); changeMerge(b); });
+      meta.append(merge);
+      if (b.merged) {
+        const undo = document.createElement("button");
+        undo.textContent = "Descombinar";
+        undo.disabled = isLocked(b.id);
+        undo.addEventListener("click", ev => { ev.stopPropagation(); changeMerge(b, true); });
+        meta.append(undo);
+      }
     }
-    if (platform?.configured && (label === "1" || label === "2") && !alreadySent(b, label)) {
+    if (platform?.configured && (label === "1" || label === "2") && (isSheets() || !alreadySent(b, label))) {
       const send = document.createElement("button");
-      send.textContent = sent ? "Reenviar" : "Enviar";
-      send.title = "Enviar este bloco para a plataforma (tecla S)";
+      send.textContent = sent?.status === "failed" ? "Tentar novamente" : "Enviar";
+      send.disabled = b.final === false || alreadySent(b, label) || labelPending.has(b.id);
+      send.title = isSheets() ? "Enviar este bloco à planilha (tecla S)" : "Enviar este bloco para a plataforma (tecla S)";
       send.addEventListener("click", (ev) => { ev.stopPropagation(); sendBlock(b.id); });
       meta.append(send);
     }
@@ -291,13 +386,16 @@ function buildBlock(b, label, suggestion) {
 
 function matches(b, q) {
   if (!q) return true;
-  return fold(`${b.text || ""} ${NAMES[labels[b.id]] || ""} ${hms(b.start)}`).includes(q);
+  return fold(`${b.text || ""} ${NAMES[labels[b.id]] || ""} ${blockTime(b)}`).includes(q);
 }
 
 function render() {
   const wasAtBottom = follow;
   const q = fold($("#search").value.trim());
   let added = 0;
+  let previousElement = $("#empty");
+  const activeIds = new Set(blocks.map(b => b.id));
+  for (const [id, cur] of rendered) if (!activeIds.has(id)) { cur.el.remove(); rendered.delete(id); }
   const lastLabelByHint = new Map();  // "session:speaker" -> label of the latest labelled block
   for (const b of blocks) {
     const label = labels[b.id] || "";
@@ -309,7 +407,9 @@ function render() {
     }
     const sent = sendByBlock.get(b.id);
     const sig = JSON.stringify([b.status, b.text, b.error, label, b.final, b.speaker_hint, suggestion, b.edited, b.id === editingId,
-      sent?.status, sent?.error, !!platform?.configured]);
+      sent?.status, sent?.error, !!platform?.configured, platform?.target, settings, b.merged_edited, b.source_ids,
+      isLocked(b.id), sendPending.has(b.id), sendUnconfirmed.has(b.id), labelPending.has(b.id), neighbour(b.id, 1)?.id, neighbour(b.id, 1)?.final,
+      isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id]]);
     const cur = rendered.get(b.id);
     if (!cur) {
       const el = buildBlock(b, label, suggestion);
@@ -323,9 +423,12 @@ function render() {
       rendered.set(b.id, { el, sig });
     }
     // A Soniox block whose only (non-final) text was dropped on a reconnect; its audio was re-sent.
-    const superseded = b.final === true && b.status === "ok" && !b.text;
+    const superseded = b.final === true && b.status === "ok" && !b.text && !b.edited && !b.merged;
     const el = rendered.get(b.id).el;
     el.hidden = superseded || !matches(b, q);
+    // Move only when ordering changed; moving a focused editor loses focus.
+    if (previousElement.nextElementSibling !== el) previousElement.after(el);
+    previousElement = el;
   }
   $("#empty").style.display = blocks.length ? "none" : "block";
   markTarget();
@@ -383,19 +486,32 @@ function renderUnreachable() {
   $("#status").classList.remove("rec");
 }
 
-async function poll() {
-  try {
+async function refreshState() {
+    const revision = stateRevision;
+    const request = ++stateRequest;
     const res = await fetch("/api/state", { cache: "no-store" });
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
+    if (revision !== stateRevision || request < appliedStateRequest) return;
+    appliedStateRequest = request;
     blocks = data.blocks;
     labels = data.labels;
     platform = data.platform;
+    if (!settingsPending) settings = data.settings || {};
+    sessionStart = data.session_start;
+    renderSettings();
     sendByBlock = new Map();
     for (const item of platform?.items || []) for (const id of item.blockIds) sendByBlock.set(id, item);
+    sendUnconfirmed.clear();
+    if (editingId && isLocked(editingId)) editingId = null;
     renderPlatform();
     renderStatus(data.status);
     render();
+}
+
+async function poll() {
+  try {
+    await refreshState();
   } catch {
     renderUnreachable();
   } finally {
@@ -405,10 +521,19 @@ async function poll() {
 
 // --- sending to the platform ------------------------------------------------------
 function renderPlatform() {
-  const show = !!platform && (platform.configured || platform.missing.length < 5);
+  const show = !!platform && (isSheets() || platform.configured || platform.missing.length < 5);
   $("#platItem").hidden = !show;
   if (!show) return;
+  $("#destination").textContent = isSheets() ? "Planilha" : "Plataforma";
   const c = platform.counts || {};
+  if (isSheets()) {
+    const pending = (c.queued || 0) + (c.sending || 0) + (c.verifying || 0);
+    $("#plat").textContent = !platform.configured ? `não configurada (${platform.missing.join(", ")})`
+      : `enviados ${c.sent || 0}` + (pending ? ` · aguardando ${pending}` : "") + (c.failed ? ` · falhas ${c.failed}` : "");
+    $("#plat").classList.toggle("bad", !platform.configured || !!(c.failed || c.verifying));
+    $("#plat").title = [...(platform.items || [])].reverse().find(i => i.error)?.error || "";
+    return;
+  }
   const waiting = (c.queued || 0) + (c.error || 0) + (c.auth || 0);
   let txt = !platform.configured ? `não configurada (${platform.missing.join(", ")})`
     : !platform.logged_in_as ? "sem login"
@@ -424,9 +549,13 @@ function renderPlatform() {
 async function sendBlock(id) {
   const b = blocks.find((x) => x.id === id);
   const label = labels[id];
+  if (editingId || labelPending.has(id)) return toast("Salve a edição e aguarde o rótulo antes de enviar");
+  if (b?.final === false) return toast("Espere o bloco finalizar para enviar");
   if (!b || !(label === "1" || label === "2")) return toast("Rotule o bloco com 1 (Lula) ou 2 (Flávio) antes");
   const prev = sendByBlock.get(id);
-  if (alreadySent(b, label)) return toast(`Bloco ${SEND_TEXT[prev.status] || prev.status}`);
+  if (alreadySent(b, label)) return toast("Bloco em envio ou já enviado");
+  sendPending.add(id);
+  render();
   try {
     const res = await fetch("/api/send", {
       method: "POST",
@@ -435,30 +564,45 @@ async function sendBlock(id) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
+    stateRevision++;
     sendByBlock.set(id, { status: data.status, label, blockIds: [id], text: data.status === "waiting" ? null : b.text });
     render();
     toast(data.status === "waiting" ? `${NAMES[label]}: envia quando finalizar` :
       prev ? `Reenviado como ${NAMES[label]}` : `Na fila: ${NAMES[label]}`);
     if (selectedId === id) moveSelection(1);
   } catch (e) {
+    // If the POST response was lost, refresh the durable queue before allowing retry.
+    try { await refreshState(); } catch { sendUnconfirmed.add(id); }
     toast(`Não foi possível enviar: ${e.message}`);
+  } finally {
+    sendPending.delete(id);
+    render();
   }
 }
 
-// Same speaker and same text already queued or sent (an edit or relabel allows a resend).
+const isSheets = () => platform?.target === "sheets";
+function isLocked(id) {
+  const item = sendByBlock.get(id);
+  return sendPending.has(id) || sendUnconfirmed.has(id) || (isSheets() && !!item && item.status !== "failed");
+}
+
+// Sheets snapshots stay immutable. Platform drafts retain their existing versioning.
 function alreadySent(b, label) {
+  if (isLocked(b.id)) return true;
   const prev = sendByBlock.get(b.id);
   return !!prev && prev.label === label && prev.status !== "failed" && (prev.text == null || prev.text === b.text);
 }
 
 // --- editing text ---------------------------------------------------------------------
 function neighbour(id, delta) {
-  const list = blocks.filter((b) => b.status === "ok" && !(b.final === true && !b.text && !b.edited));
+  const list = blocks.filter((b) => !(b.final === true && b.status === "ok" && !b.text && !b.edited));
   const i = list.findIndex((b) => b.id === id);
-  return i < 0 ? null : list[i + delta] || null;
+  const next = i < 0 ? null : list[i + delta] || null;
+  return next?.status === "ok" ? next : null;
 }
 
 function openEditor(id) {
+  if (isLocked(id)) return toast("Bloco em envio ou enviado à planilha; corrija na planilha após o envio");
   const b = blocks.find((x) => x.id === id);
   if (!b || b.status !== "ok" || b.final === false) return toast("Espere o bloco finalizar para editar");
   editingId = id;
@@ -474,6 +618,7 @@ function closeEditor() {
 }
 
 async function saveEdits(edits, message) {
+  if (Object.keys(edits).some(isLocked)) return toast("Bloco em envio ou enviado à planilha");
   try {
     const res = await fetch("/api/edit", {
       method: "POST",
@@ -482,12 +627,8 @@ async function saveEdits(edits, message) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
-    for (const [bid, t] of Object.entries(edits)) {
-      const b = blocks.find((x) => x.id === bid);
-      if (b) Object.assign(b, t === null ? { text: b.original_text ?? b.text, edited: false } : { text: t, edited: true });
-    }
     editingId = null;
-    render();
+    await refreshState();
     toast(message);
     return true;
   } catch (e) {
@@ -504,9 +645,10 @@ function buildEditor(b) {
   ta.value = b.text;
   const row = document.createElement("div");
   row.className = "row";
-  const btn = (label, fn, cls) => {
+  const btn = (label, fn, cls, disabled = false) => {
     const x = document.createElement("button");
     x.textContent = label;
+    x.disabled = disabled;
     if (cls) x.className = cls;
     x.addEventListener("click", (ev) => { ev.stopPropagation(); fn(); });
     row.append(x);
@@ -521,14 +663,14 @@ function buildEditor(b) {
     const pos = ta.selectionStart;
     saveEdits({ [b.id]: ta.value.slice(0, pos).trim(), [next.id]: join(ta.value.slice(pos), next.text) },
       "Movido para o próximo bloco");
-  });
+  }, "", isLocked(neighbour(b.id, 1)?.id));
   btn("← Mover até o cursor → bloco anterior", () => {
     const prev = neighbour(b.id, -1);
     if (!prev) return toast("Não há bloco anterior");
     const pos = ta.selectionStart;
     saveEdits({ [b.id]: ta.value.slice(pos).trim(), [prev.id]: join(prev.text, ta.value.slice(0, pos)) },
       "Movido para o bloco anterior");
-  });
+  }, "", isLocked(neighbour(b.id, -1)?.id));
   if (b.edited) btn("Restaurar original", () => saveEdits({ [b.id]: null }, "Texto original restaurado"));
   const tip = document.createElement("span");
   tip.className = "tip";
@@ -545,6 +687,9 @@ function buildEditor(b) {
 
 // --- labelling ----------------------------------------------------------------
 async function setLabel(id, label) {
+  if (isLocked(id)) return toast("Bloco em envio ou enviado à planilha");
+  if (labelPending.has(id)) return;
+  labelPending.add(id);
   const previous = labels[id];
   if (label) labels[id] = label; else delete labels[id];
   render();
@@ -559,6 +704,9 @@ async function setLabel(id, label) {
     if (previous) labels[id] = previous; else delete labels[id];
     render();
     toast("Não foi possível salvar o rótulo");
+  } finally {
+    labelPending.delete(id);
+    render();
   }
 }
 
@@ -575,6 +723,7 @@ function moveSelection(delta) {
 }
 
 document.addEventListener("keydown", (ev) => {
+  if (ev.target.closest("#timeControls")) return;
   if (ev.target === $("#search")) {
     if (ev.key === "Escape") { ev.target.value = ""; ev.target.blur(); render(); }
     return;
@@ -589,7 +738,7 @@ document.addEventListener("keydown", (ev) => {
   } else if (key === "E") {
     if (id) openEditor(id);
   } else if (key === "S") {
-    if (!platform?.configured) toast("Plataforma não configurada");
+    if (!platform?.configured) toast(isSheets() ? "Planilha não configurada" : "Plataforma não configurada");
     else if (id) sendBlock(id);
   } else if (key === "ARROWUP" || key === "K") {
     moveSelection(-1);
@@ -628,6 +777,7 @@ $("#copyAll").addEventListener("click", () => {
 });
 
 $("#search").addEventListener("input", render);
+for (const id of ["#debateDate", "#debateStart", "#showMinutage"]) $(id).addEventListener("change", saveSettings);
 $("#jump").addEventListener("click", scrollToLatest);
 window.addEventListener("scroll", () => {
   follow = atBottom();

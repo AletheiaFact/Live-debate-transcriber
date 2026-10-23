@@ -2,12 +2,11 @@
 """Local operator UI for the live transcription.
 
 Runs separately from recorder.py and only reads its files, except
-labels.json, edits.json and outbox.jsonl, which only this server writes.
-Text edits are kept apart from blocks.jsonl and applied on top of it. Standard library only.
+labels.json, edits.json, operator.json and send queues, which only this server writes.
+Text edits are kept apart from blocks.jsonl and applied on top of it.
 
-If the Aletheia platform is configured in .env (see platform_client.py),
-"send speech" queues labelled blocks for the platform; sending happens in a
-background thread and never touches the recorder.
+SEND_TARGET selects Google Sheets or the Aletheia platform in .env. Sending
+happens in a background thread and never touches the recorder.
 """
 
 import argparse
@@ -16,10 +15,12 @@ import os
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import platform_client
+import sheets_client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(HERE, "static", "index.html")
@@ -40,11 +41,18 @@ class Store:
         self.labels_path = os.path.join(data_dir, "labels.json")
         self.edits_path = os.path.join(data_dir, "edits.json")
         self.status_path = os.path.join(data_dir, "status.json")
+        self.operator_path = os.path.join(data_dir, "operator.json")
+        self.operator = self._read_json(self.operator_path) or {"settings": {}, "groups": {}}
         self.lock = threading.Lock()
         self.offset = 0
         self.merged = {}
         self.labels = self._read_json(self.labels_path) or {}
         self.edits = self._read_json(self.edits_path) or {}  # block id -> operator's text
+        self.send_locked = lambda bid: False
+
+    def require_mutable(self, *ids):
+        if any(self.send_locked(bid) for bid in ids):
+            raise ValueError("bloco em envio ou enviado à planilha; faça correções na planilha após o envio")
 
     @staticmethod
     def _read_json(path):
@@ -79,17 +87,99 @@ class Store:
 
     def current_blocks(self):
         """Blocks with the operator's text edits applied. Caller holds self.lock."""
+        raw = self.blocks()
+        by_id = {b["id"]: b for b in raw}
+        groups = self.operator["groups"]
+        children = {bid for g in groups.values() for bid in g["children"]}
+        roots = {gid: g for gid, g in groups.items() if gid not in children}
+        hidden = {bid for g in roots.values() for bid in g["source_ids"]}
+        at = {g["source_ids"][0]: gid for gid, g in roots.items()}
         out = []
-        for b in self.blocks():
+        for b in raw:
+            gid = at.get(b["id"])
+            if gid:
+                g = groups[gid]
+                sources = [by_id[bid] for bid in g["source_ids"]]
+                original = " ".join(s.get("text", "").strip() for s in sources).strip()
+                b = {**sources[0], "id": gid, "text": g["baseline"],
+                     "end_ms": sources[-1].get("end_ms"), "source_ids": g["source_ids"],
+                     "original_text": original, "edited": g["baseline"] != original,
+                     "merged": True, "merged_edited": gid in self.edits}
+            elif b["id"] in hidden:
+                continue
             if b["id"] in self.edits:
-                b = {**b, "text": self.edits[b["id"]], "edited": True, "original_text": b.get("text", "")}
+                original = b.get("original_text", b.get("text", ""))
+                b = {**b, "text": self.edits[b["id"]], "edited": self.edits[b["id"]] != original,
+                     "original_text": original}
             out.append(b)
         return out
+
+    @staticmethod
+    def _save(path, value):
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(value, f, ensure_ascii=False, indent=2)
+        os.replace(path + ".tmp", path)
+
+    def set_settings(self, settings):
+        start = settings.get("debate_start", "")
+        if start:
+            datetime.fromisoformat(start)  # require a complete date and explicit timezone
+            if "T" not in start or datetime.fromisoformat(start).tzinfo is None:
+                raise ValueError("informe a data, o horário e o fuso do início")
+        if not isinstance(settings.get("show_minutage"), bool):
+            raise ValueError("opção de minutagem inválida")
+        with self.lock:
+            self.operator["settings"] = {"debate_start": start, "show_minutage": settings["show_minutage"]}
+            self._save(self.operator_path, self.operator)
+
+    def merge_down(self, bid):
+        with self.lock:
+            blocks = [b for b in self.current_blocks()
+                      if not (b.get("final") is True and b.get("status") == "ok" and not b.get("text") and not b.get("edited"))]
+            index = next((i for i, b in enumerate(blocks) if b["id"] == bid), -1)
+            if index < 0 or index + 1 >= len(blocks):
+                raise ValueError("não há próximo bloco")
+            pair = blocks[index:index + 2]
+            self.require_mutable(*(b["id"] for b in pair))
+            if any(not _is_final(b) for b in pair):
+                raise ValueError("espere os dois blocos finalizarem")
+            labels = {self.labels.get(b["id"]) for b in pair} - {None, ""}
+            if len(labels) > 1:
+                raise ValueError("os blocos têm falantes diferentes")
+            gid = "merge-" + uuid.uuid4().hex
+            self.operator["groups"][gid] = {
+                "children": [b["id"] for b in pair],
+                "source_ids": [sid for b in pair for sid in b.get("source_ids", [b["id"]])],
+                "baseline": " ".join(b["text"].strip() for b in pair).strip(),
+            }
+            if labels:
+                self.labels[gid] = labels.pop()
+            self._save(self.labels_path, self.labels)
+            self._save(self.operator_path, self.operator)
+            return gid
+
+    def unmerge(self, bid, confirmed=False):
+        with self.lock:
+            self.require_mutable(bid)
+            b = next((b for b in self.current_blocks() if b["id"] == bid), None)
+            if not b or not b.get("merged"):
+                raise ValueError("bloco combinado desconhecido")
+            if b["merged_edited"] and not confirmed:
+                raise ValueError("confirme o descarte das edições feitas após combinar")
+            first = self.operator["groups"][bid]["children"][0]
+            del self.operator["groups"][bid]
+            self.edits.pop(bid, None)
+            self.labels.pop(bid, None)
+            self._save(self.operator_path, self.operator)
+            self._save(self.edits_path, self.edits)
+            self._save(self.labels_path, self.labels)
+            return first
 
     def set_edits(self, edits):
         """edits: {block id: new text, or None to restore the transcribed text}."""
         with self.lock:
-            by_id = {b["id"]: b for b in self.blocks()}
+            self.require_mutable(*edits)
+            by_id = {b["id"]: b for b in self.current_blocks()}
             for bid in edits:
                 b = by_id.get(bid)
                 if b is None:
@@ -97,7 +187,10 @@ class Store:
                 if b.get("status") != "ok" or b.get("final") is False:
                     raise ValueError("só dá para editar blocos finalizados e transcritos; espere finalizar")
             for bid, text in edits.items():
-                if text is None or text == by_id[bid].get("text", ""):
+                if by_id[bid].get("merged"):
+                    self.edits[bid] = by_id[bid]["original_text"] if text is None else text
+                    continue
+                if text is None or text == by_id[bid].get("original_text", by_id[bid].get("text", "")):
                     self.edits.pop(bid, None)
                 else:
                     self.edits[bid] = text
@@ -111,6 +204,7 @@ class Store:
         with self.lock:
             blocks = self.current_blocks()
             labels = dict(self.labels)
+            settings = dict(self.operator["settings"])
         status = self._read_json(self.status_path) or {}
         heartbeat = to_epoch(status.get("heartbeat"))
         recorder_alive = heartbeat is not None and now - heartbeat < HEARTBEAT_STALE_SECONDS
@@ -124,6 +218,8 @@ class Store:
             "now": datetime.now().astimezone().isoformat(timespec="seconds"),
             "blocks": blocks,
             "labels": labels,
+            "settings": settings,
+            "session_start": status.get("started_at") or (blocks[0]["start"] if blocks else None),
             "status": {
                 "recording": bool(status.get("recording")) and recorder_alive,
                 "recorder_alive": recorder_alive,
@@ -144,6 +240,7 @@ class Store:
 
     def set_label(self, block_id, label):
         with self.lock:
+            self.require_mutable(block_id)
             if label:
                 self.labels[block_id] = label
             else:
@@ -197,11 +294,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return
-        if self.path not in ("/api/label", "/api/send", "/api/edit"):
+        if self.path not in ("/api/label", "/api/send", "/api/edit", "/api/settings", "/api/merge", "/api/unmerge"):
             return self.send_error(404)
         length = int(self.headers.get("Content-Length") or 0)
         if length > 65536:
             return self.send_error(413)
+        if self.path in ("/api/settings", "/api/merge", "/api/unmerge"):
+            try:
+                body = json.loads(self.rfile.read(length))
+                if self.path == "/api/settings":
+                    self.store.set_settings(body)
+                    result = None
+                elif self.path == "/api/merge":
+                    result = self.store.merge_down(str(body["id"]))
+                else:
+                    result = self.store.unmerge(str(body["id"]), body.get("confirmed") is True)
+                return self._json(200, {"ok": True, "id": result})
+            except (ValueError, KeyError, TypeError) as e:
+                return self._json(400, {"error": str(e)})
         if self.path == "/api/send":
             return self._send_speech(length)
         if self.path == "/api/edit":
@@ -213,7 +323,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "esperado {id, label}"})
         if label and label not in VALID_LABELS:
             return self._json(400, {"error": f"o rótulo deve ser um de {sorted(VALID_LABELS)} ou vazio"})
-        self.store.set_label(block_id, label)
+        try:
+            self.store.set_label(block_id, label)
+        except ValueError as e:
+            return self._json(400, {"error": str(e)})
         self._json(200, {"ok": True})
 
     def _edit(self, length):
@@ -232,28 +345,41 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": True})
 
     def _send_speech(self, length):
-        """Queue blocks labelled 1/2 for the platform; live blocks wait until final."""
+        """Queue only finalized blocks labelled 1/2."""
         if self.outbox.cfg.missing():
-            return self._json(400, {"error": "plataforma não configurada: " + ", ".join(self.outbox.cfg.missing())})
+            return self._json(400, {"error": "destino não configurado: " + ", ".join(self.outbox.cfg.missing())})
         try:
-            ids = [str(i) for i in json.loads(self.rfile.read(length))["blockIds"]]
+            ids = json.loads(self.rfile.read(length))["blockIds"]
+            if not isinstance(ids, list):
+                raise TypeError
+            ids = [str(i) for i in ids]
         except (ValueError, KeyError, TypeError):
             return self._json(400, {"error": "esperado {blockIds: [...]}"})
-        state = self.store.state()
-        by_id = {b["id"]: b for b in state["blocks"]}
-        if not ids or len(set(ids)) != len(ids) or any(i not in by_id for i in ids):
-            return self._json(400, {"error": "bloco desconhecido ou repetido"})
-        wanted = set(ids)
-        blocks = [b for b in state["blocks"] if b["id"] in wanted]  # debate order
-        labels = {state["labels"].get(i) for i in ids}
-        if len(labels) != 1 or not labels <= {"1", "2"}:
-            return self._json(400, {"error": "rotule o bloco com 1 (Lula) ou 2 (Flávio) antes"})
-        if any(b.get("status") != "ok" for b in blocks):
-            return self._json(400, {"error": "um bloco com falha não pode ser enviado"})
-        live = any(not _is_final(b) for b in blocks)
-        if not live and any(not b.get("text") for b in blocks):
-            return self._json(400, {"error": "o bloco não tem texto"})
-        item = self.outbox.enqueue(labels.pop(), blocks, waiting=live)
+        # Snapshot validation and queue persistence share the edit lock, so an edit,
+        # relabel, merge or second click cannot slip between validation and locking.
+        with self.store.lock:
+            current = self.store.current_blocks()
+            by_id = {b["id"]: b for b in current}
+            if not ids or len(set(ids)) != len(ids) or any(i not in by_id for i in ids):
+                return self._json(400, {"error": "bloco desconhecido ou repetido"})
+            wanted = set(ids)
+            blocks = [b for b in current if b["id"] in wanted]
+            labels = {self.store.labels.get(i) for i in ids}
+            if len(labels) != 1 or not labels <= {"1", "2"}:
+                return self._json(400, {"error": "rotule o bloco com 1 (Lula) ou 2 (Flávio) antes"})
+            if any(b.get("status") != "ok" for b in blocks):
+                return self._json(400, {"error": "um bloco com falha não pode ser enviado"})
+            if any(not _is_final(b) for b in blocks):
+                return self._json(400, {"error": "espere o bloco finalizar para enviar"})
+            if any(not b.get("text", "").strip() for b in blocks):
+                return self._json(400, {"error": "o bloco não tem texto"})
+            try:
+                if isinstance(self.outbox, sheets_client.Outbox):
+                    item = self.outbox.enqueue(labels.pop(), blocks, self.store.operator["settings"])
+                else:
+                    item = self.outbox.enqueue(labels.pop(), blocks, waiting=False)
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
         self._json(200, {"externalId": item["externalId"], "status": item["status"]})
 
 
@@ -285,9 +411,16 @@ def main():
     platform_client.load_dotenv()
     Handler.store = Store(args.data_dir)
     store = Handler.store
-    Handler.outbox = platform_client.Outbox(
-        platform_client.Config(), args.data_dir, resolve=lambda ids: resolve_blocks(store, ids)
-    )
+    target = os.environ.get("SEND_TARGET") or ("sheets" if os.environ.get("SPREADSHEET_ID") else "platform")
+    if target == "sheets":
+        Handler.outbox = sheets_client.Outbox(sheets_client.Config(), args.data_dir)
+        store.send_locked = Handler.outbox.locked
+    elif target == "platform":
+        Handler.outbox = platform_client.Outbox(
+            platform_client.Config(), args.data_dir, resolve=lambda ids: resolve_blocks(store, ids)
+        )
+    else:
+        sys.exit("SEND_TARGET must be sheets or platform")
     try:
         server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     except OSError as e:
