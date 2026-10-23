@@ -475,6 +475,16 @@ Set `TYPESAFE_API_KEY` and `JEV_MODEL` in `.env`. See
 [CHECKABILITY.md](CHECKABILITY.md) for the rubric, the formula, the context sent
 with each block and mock mode.
 
+`themes.py` asks Jev to suggest one theme per block from a closed list, with the
+same context, skip rules and mock mode, and writes `themes.jsonl`:
+
+```bash
+python3 themes.py --data-dir data/debate --watch
+python3 themes.py --check            # reference examples with the expected theme
+```
+
+See [THEMES.md](THEMES.md) for the options, the families and combined blocks.
+
 ## Resilience
 
 - **Reconnects:** if the WebSocket drops or Soniox stops answering for 20 s, the
@@ -501,7 +511,8 @@ sheets_client.py     Google Sheets sending, delivery receipts and read-only chec
 requirements.txt     optional Google Sheets dependencies
 contexto.txt         context terms for the 2026 debate
 checkability.py      Jev checkability scores per block (rubric, context, store)
-jev_client.py        TypeSafe API client for Jev (retries, mock mode)
+themes.py            Jev theme suggestion per block (options, families, store)
+jev_client.py        TypeSafe API client for Jev (score and choice questions, retries, mock mode)
 
 data/<session>/blocks.jsonl   one JSON line per block update (last line per id wins)
 data/<session>/labels.json    speaker labels (server.py)
@@ -510,6 +521,7 @@ data/<session>/operator.json  session time settings and reversible block merges
 data/<session>/outbox.jsonl   send queue (server.py)
 data/<session>/sheets_outbox.jsonl  immutable Sheets snapshots and delivery status
 data/<session>/checkability.jsonl  Jev scores per block (last line per block id wins)
+data/<session>/themes.jsonl   Jev theme suggestions per block (last line per block id wins)
 data/<session>/status.json    recorder heartbeat, every 2 s
 data/<session>/audio/         16 kHz mono WAV chunks
 ```
