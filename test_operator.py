@@ -78,6 +78,19 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(responses[0][0], 400)
         self.assertIn("finalizar", responses[0][1]["error"])
 
+    def test_checkability_scores_in_state_and_stale_after_edit(self):
+        self.assertEqual(self.store.state()["checkability"], {})
+        with open(self.store.scores_path, "a", encoding="utf-8") as f:
+            for bid, text, pct in [("a", "first", 10.0), ("b", "old text", 50.0), ("b", "second", 97.0)]:
+                f.write(json.dumps({"block_id": bid, "percentage": pct, "method": "jev_direct", "model": "jev-1.13.0",
+                                    "rubric_version": 1, "state": {"target_block": text}}) + "\n")
+            f.write('{"block_id": "c", "percen')  # checkability.py mid-write
+        scores = self.store.state()["checkability"]
+        self.assertEqual(sorted(scores), ["a", "b"])
+        self.assertEqual((scores["b"]["percentage"], scores["b"]["stale"]), (97.0, False))
+        self.store.set_edits({"a": "first, edited"})
+        self.assertTrue(self.store.state()["checkability"]["a"]["stale"])
+
     def test_settings_persist_and_validate_timezone(self):
         settings = {"debate_start": "2026-10-22T23:30:00-04:00", "show_minutage": True}
         self.store.set_settings(settings)

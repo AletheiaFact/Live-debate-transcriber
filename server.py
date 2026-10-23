@@ -3,6 +3,7 @@
 
 Runs separately from recorder.py and only reads its files, except
 labels.json, edits.json, operator.json and send queues, which only this server writes.
+Checkability scores are read from checkability.jsonl, written by checkability.py.
 Text edits are kept apart from blocks.jsonl and applied on top of it.
 
 SEND_TARGET selects Google Sheets, the Aletheia platform, or both
@@ -43,6 +44,9 @@ class Store:
         self.edits_path = os.path.join(data_dir, "edits.json")
         self.status_path = os.path.join(data_dir, "status.json")
         self.operator_path = os.path.join(data_dir, "operator.json")
+        self.scores_path = os.path.join(data_dir, "checkability.jsonl")
+        self.scores_offset = 0
+        self.scores = {}
         self.operator = self._read_json(self.operator_path) or {"settings": {}, "groups": {}}
         self.lock = threading.Lock()
         self.offset = 0
@@ -85,6 +89,39 @@ class Store:
                     bid = block["id"]
                     self.merged[bid] = {**self.merged.get(bid, {}), **block}
         return list(self.merged.values())
+
+    def checkability(self, blocks):
+        """Latest score per current block, read incrementally from checkability.jsonl.
+
+        stale: the block's text changed since it was scored and checkability.py
+        has not rescored it yet.
+        """
+        try:
+            size = os.path.getsize(self.scores_path)
+        except OSError:
+            size = 0
+        if size < self.scores_offset:  # file was replaced: start over
+            self.scores_offset, self.scores = 0, {}
+        if size > self.scores_offset:
+            with open(self.scores_path, "rb") as f:
+                f.seek(self.scores_offset)
+                for raw in f:
+                    if not raw.endswith(b"\n"):
+                        break  # checkability.py is mid-write; pick it up next poll
+                    self.scores_offset += len(raw)
+                    try:
+                        item = json.loads(raw)
+                        self.scores[item["block_id"]] = item
+                    except (ValueError, KeyError):
+                        continue
+        out = {}
+        for b in blocks:
+            item = self.scores.get(b["id"])
+            if item:
+                scored_text = (item.get("state") or {}).get("target_block")
+                out[b["id"]] = {k: item.get(k) for k in ("percentage", "method", "model", "rubric_version")}
+                out[b["id"]]["stale"] = scored_text != " ".join(b.get("text", "").split())
+        return out
 
     def current_blocks(self):
         """Blocks with the operator's text edits applied. Caller holds self.lock."""
@@ -206,6 +243,7 @@ class Store:
             blocks = self.current_blocks()
             labels = dict(self.labels)
             settings = dict(self.operator["settings"])
+            checkability = self.checkability(blocks)
         status = self._read_json(self.status_path) or {}
         heartbeat = to_epoch(status.get("heartbeat"))
         recorder_alive = heartbeat is not None and now - heartbeat < HEARTBEAT_STALE_SECONDS
@@ -219,6 +257,7 @@ class Store:
             "now": datetime.now().astimezone().isoformat(timespec="seconds"),
             "blocks": blocks,
             "labels": labels,
+            "checkability": checkability,
             "settings": settings,
             "session_start": status.get("started_at") or (blocks[0]["start"] if blocks else None),
             "status": {
@@ -381,17 +420,29 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 # The primary goes first: if it rejects the block, nothing is queued anywhere.
                 settings = self.store.operator["settings"]
-                item = enqueue(self.outbox, label, blocks, settings)
+                score = sheet_score(self.store.checkability(blocks), blocks)
+                item = enqueue(self.outbox, label, blocks, settings, score)
                 for outbox in self.extra_outboxes:
-                    enqueue(outbox, label, blocks, settings)
+                    enqueue(outbox, label, blocks, settings, score)
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
         self._json(200, {"externalId": item["externalId"], "status": item["status"]})
 
 
-def enqueue(outbox, label, blocks, settings):
+def sheet_score(scores, blocks):
+    """Integer percentage for the Sheets row, or "" unless every block has a current, real score.
+
+    Several blocks sent together get the best one, as combined blocks do.
+    """
+    found = [scores.get(b["id"]) for b in blocks]
+    if any(s is None or s["stale"] or s["model"] == "jev-mock" for s in found):
+        return ""
+    return round(max(s["percentage"] for s in found))
+
+
+def enqueue(outbox, label, blocks, settings, score=""):
     if isinstance(outbox, sheets_client.Outbox):
-        return outbox.enqueue(label, blocks, settings)
+        return outbox.enqueue(label, blocks, settings, score)
     # Platform ids are deterministic, so a resend of a queued or sent block is a no-op there.
     return outbox.enqueue(label, blocks, waiting=False)
 
