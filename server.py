@@ -420,17 +420,29 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 # The primary goes first: if it rejects the block, nothing is queued anywhere.
                 settings = self.store.operator["settings"]
-                item = enqueue(self.outbox, label, blocks, settings)
+                score = sheet_score(self.store.checkability(blocks), blocks)
+                item = enqueue(self.outbox, label, blocks, settings, score)
                 for outbox in self.extra_outboxes:
-                    enqueue(outbox, label, blocks, settings)
+                    enqueue(outbox, label, blocks, settings, score)
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
         self._json(200, {"externalId": item["externalId"], "status": item["status"]})
 
 
-def enqueue(outbox, label, blocks, settings):
+def sheet_score(scores, blocks):
+    """Integer percentage for the Sheets row, or "" unless every block has a current, real score.
+
+    Several blocks sent together get the best one, as combined blocks do.
+    """
+    found = [scores.get(b["id"]) for b in blocks]
+    if any(s is None or s["stale"] or s["model"] == "jev-mock" for s in found):
+        return ""
+    return round(max(s["percentage"] for s in found))
+
+
+def enqueue(outbox, label, blocks, settings, score=""):
     if isinstance(outbox, sheets_client.Outbox):
-        return outbox.enqueue(label, blocks, settings)
+        return outbox.enqueue(label, blocks, settings, score)
     # Platform ids are deterministic, so a resend of a queued or sent block is a no-op there.
     return outbox.enqueue(label, blocks, waiting=False)
 

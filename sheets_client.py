@@ -13,7 +13,8 @@ from datetime import datetime
 from platform_client import load_dotenv, now_iso
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Status", "Colaborador"]
+HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Checabilidade", "Status", "Colaborador"]
+HEADER_RANGE = "A6:G6"
 NAMES = {"1": "Lula", "2": "Flávio"}
 RECEIPT_KEY = "ldt"
 LOCKED_STATUSES = {"queued", "sending", "verifying", "sent"}
@@ -30,8 +31,11 @@ class Config:
                                          ("GOOGLE_APPLICATION_CREDENTIALS", self.credentials_path)) if not value]
 
 
-def transcript_row(label, blocks, settings):
-    """Sheet timestamps are always elapsed from debate start, independent of UI display."""
+def transcript_row(label, blocks, settings, checkability=""):
+    """Sheet timestamps are always elapsed from debate start, independent of UI display.
+
+    checkability: the block's Jev score as an integer percentage, or "" when none is ready.
+    """
     if not settings.get("debate_start"):
         raise ValueError("configure o início do debate antes de enviar à planilha")
     start = datetime.fromisoformat(settings["debate_start"])
@@ -48,7 +52,19 @@ def transcript_row(label, blocks, settings):
     if first.tzinfo is None or not isinstance(end_ms, (int, float)):
         raise ValueError("o bloco não tem horários completos de início e fim")
     return [elapsed(first.timestamp()), elapsed(end_ms / 1000), NAMES[label],
-            " ".join(b["text"].strip() for b in blocks), "Novo"]
+            " ".join(b["text"].strip() for b in blocks), checkability, "Novo"]
+
+
+def sheet_row(row):
+    """Snapshots queued before the Checabilidade column (A:E) get an empty E, so Status stays in F."""
+    return row[:4] + [""] + row[4:] if len(row) == 5 else row
+
+
+def cell(value):
+    # Numbers stay numbers so the score sorts and filters; everything else is literal text.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return {"userEnteredValue": {"numberValue": value}}
+    return {"userEnteredValue": {"stringValue": value}}
 
 
 class DeliveryUnknown(Exception):
@@ -84,9 +100,9 @@ class Client:
             raise ValueError(f"aba não encontrada: {self.cfg.tab}")
         quoted = "'" + self.cfg.tab.replace("'", "''") + "'"
         headers = api.values().get(spreadsheetId=self.cfg.spreadsheet_id,
-                                   range=quoted + "!A6:F6").execute(num_retries=0).get("values", [])
+                                   range=f"{quoted}!{HEADER_RANGE}").execute(num_retries=0).get("values", [])
         if headers != [HEADERS]:
-            raise ValueError("os cabeçalhos A6:F6 não correspondem ao modelo da transcrição")
+            raise ValueError(f"os cabeçalhos {HEADER_RANGE} não correspondem ao modelo da transcrição")
         return tab["sheetId"]
 
     def receipt(self, item):
@@ -115,7 +131,7 @@ class Client:
         sheet_id = self.check()
         body = {"requests": [
             {"appendCells": {"sheetId": sheet_id,
-                             "rows": [{"values": [{"userEnteredValue": {"stringValue": v}} for v in item["row"]]}],
+                             "rows": [{"values": [cell(v) for v in sheet_row(item["row"])]}],
                              "fields": "userEnteredValue"}},
             {"createDeveloperMetadata": {"developerMetadata": {
                 "metadataId": item["metadataId"], "metadataKey": RECEIPT_KEY,
@@ -174,7 +190,7 @@ class Outbox:
         with self.lock:
             return any(bid in i["blockIds"] and i["status"] in LOCKED_STATUSES for i in self.items.values())
 
-    def enqueue(self, label, blocks, settings):
+    def enqueue(self, label, blocks, settings, checkability=""):
         with self.lock:
             ids = [b["id"] for b in blocks]
             if any(set(ids).intersection(i["blockIds"]) and i["status"] in LOCKED_STATUSES
@@ -182,7 +198,7 @@ class Outbox:
                 raise ValueError("o bloco já está em envio ou foi enviado à planilha")
             item = {"externalId": uuid.uuid4().hex[:16], "metadataId": secrets.randbelow(2**31 - 1) + 1,
                     "spreadsheetId": self.cfg.spreadsheet_id, "tab": self.cfg.tab,
-                    "blockIds": ids, "label": label, "row": transcript_row(label, blocks, settings),
+                    "blockIds": ids, "label": label, "row": transcript_row(label, blocks, settings, checkability),
                     "text": " ".join(b["text"].strip() for b in blocks),
                     "status": "queued", "uncertain": False, "attempts": 0, "next_try": 0,
                     "created_at": now_iso(), "error": None}
@@ -237,7 +253,7 @@ def main():
     if cfg.missing():
         raise SystemExit("Faltam variáveis no .env: " + ", ".join(cfg.missing()))
     Client(cfg).check()
-    print(f"OK: acesso à aba {cfg.tab}; cabeçalhos A6:F6 conferidos. Nenhum dado enviado.")
+    print(f"OK: acesso à aba {cfg.tab}; cabeçalhos {HEADER_RANGE} conferidos. Nenhum dado enviado.")
 
 
 if __name__ == "__main__":
