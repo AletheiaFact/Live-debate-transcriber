@@ -2,9 +2,8 @@
 
 A small tool for following a live debate in real time. It transcribes the audio
 in Brazilian Portuguese, lets an operator tag who is speaking, and sends each
-tagged block to the [Aletheia](https://github.com/AletheiaFact/aletheia)
-fact-checking platform. There, fact-checkers turn the blocks into speeches and
-choose claims to check.
+tagged block to Google Sheets or the [Aletheia](https://github.com/AletheiaFact/aletheia)
+fact-checking platform. Reviewers choose claims to check at the destination.
 
 It was built for the 2026 Brazilian presidential debate (Lula × Flávio Bolsonaro),
 but only the context file and two speaker names are specific to that debate.
@@ -18,8 +17,8 @@ but only the context file and two speaker names are specific to that debate.
 - **Operator page:** a local web page (interface in Brazilian Portuguese) to tag
   speakers with the keyboard, fix text that landed in the wrong block, and send
   blocks to the platform.
-- **No dependencies:** Python 3 standard library only (no `pip install`), plain
-  HTML/JS, plus `ffmpeg`.
+- **Dependencies:** recording and Aletheia sending use Python's standard library,
+  plain HTML/JS, plus `ffmpeg`. Google Sheets sending uses the Google Python clients.
 
 ## How it works
 
@@ -31,7 +30,7 @@ audio source ──►│ ffmpeg ──► 15 s WAV chunks (archive) │
                                                                      │
                 ┌──────────── server.py ──────────────┐              │ (reads)
 browser ◄──────►│ operator page on 127.0.0.1:8765      │◄─────────────┘
-                │ labels.json, edits.json, outbox.jsonl│──► Aletheia API (drafts)
+                │ labels.json, edits.json, send queue│──► Google Sheets / Aletheia
                 └─────────────────────────────────────┘
 ```
 
@@ -44,6 +43,9 @@ is lost.
 - Python 3.10 or newer.
 - `ffmpeg` on `PATH` (`brew install ffmpeg` on macOS).
 - A Soniox API key (https://console.soniox.com).
+- For Google Sheets sending: `python -m pip install -r requirements.txt`, a
+  service account JSON key, Sheets API enabled, and the spreadsheet shared with
+  the service account as an Editor.
 - Optional, to capture the computer's own audio on macOS:
   [BlackHole](https://github.com/ExistentialAudio/BlackHole) (`brew install blackhole-2ch`).
 - Optional, to send blocks to Aletheia: a platform that includes the debate
@@ -148,7 +150,7 @@ one by default, or the block you clicked or moved to with ↑/↓.
 |---|---|
 | `1` / `2` / `M` | Label as Lula / Flávio / mediator (mediator blocks are dimmed) |
 | `0` | Clear the label |
-| `S` | Send the block to the platform |
+| `S` | Send the block to the configured destination |
 | `E` (or double-click) | Edit the block's text |
 | `↑` `↓` | Move between blocks |
 | `Esc` | Back to the newest block |
@@ -158,6 +160,22 @@ one by default, or the block you clicked or moved to with ↑/↓.
   diarization switches speaker. Very long turns are split at a sentence end after
   about 40 s. The open block updates about once per second and is marked
   `● ao vivo` until it is final.
+- **Minutage:** enter *Início do debate* in the header and confirm its date
+  (initially the recording's date). Toggle *Mostrar minutagem* to display elapsed
+  `HH:MM:SS` instead of clock time. Copying uses the selected format. The start
+  uses the recording's timezone; full dates handle midnight correctly, and
+  blocks before the start show negative elapsed times. Settings are saved per
+  session in `operator.json`; original block timestamps are preserved.
+- **Live blocks:** speaker labels can be changed while transcription is ongoing.
+  Editing, merging and sending require finalized blocks.
+- **Merging:** *Combinar ↓* joins a finalized block with its next adjacent
+  finalized block. Conflicting speaker labels prevent the merge; if only one
+  block is labelled, the combined block inherits that label. Combined text can
+  be edited. *Descombinar* restores the preceding blocks with their earlier
+  corrections and labels; it asks before discarding later combined-text edits.
+  Repeated merges can be undone one step at a time. *Restaurar original* in the
+  editor keeps the grouping and restores the joined AI transcriptions. Original
+  blocks remain in `blocks.jsonl`, with group structure in `operator.json`.
 - **Speaker hints:** the `S1`/`S2` badges come from Soniox diarization. They are
   hints only and never become labels by themselves. After you label a block,
   later blocks with the same hint show a dashed suggestion (`→ Lula?`). Hints
@@ -177,11 +195,90 @@ one by default, or the block you clicked or moved to with ↑/↓.
   capturing, Soniox is disconnected, or no new text has arrived for 60 s.
   *Lacunas* counts transcription gaps.
 
+## Sending blocks to Google Sheets
+
+Install the optional dependencies and configure `.env` (the recorder still needs
+`SONIOX_API_KEY`):
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+```dotenv
+SEND_TARGET=sheets
+GOOGLE_APPLICATION_CREDENTIALS=C:/Users/silas/Downloads/aletheiatranscription2026-ea33cb5faf12.json
+SPREADSHEET_ID=1x7Mz2_kB-k2-2UAswGevZd3plff2L2cDDu1JGrYtPhs
+GOOGLE_SHEETS_TAB=Sheet1
+```
+
+Keep the JSON key outside the repository. On another machine, use that machine's
+key path. Enable the Google Sheets API and share the spreadsheet with the service
+account's `client_email` as an Editor. No Google login is needed in the browser.
+Run this read-only check before starting `server.py`:
+
+```bash
+python sheets_client.py
+```
+
+The tab must have the following headers in **A6:F6**. Each selected block becomes
+one row, starting at **row 7** when the template has no transcript data:
+
+| Column | Value sent |
+|---|---|
+| A — Início | Elapsed start, `HH:MM:SS` |
+| B — Fim | Elapsed end, `HH:MM:SS` |
+| C — Etiqueta | Operator's speaker label: Lula or Flávio |
+| D — Transcrição | Final text, including operator corrections and merges |
+| E — Status | `Novo` |
+| F — Colaborador | Left for reviewers |
+
+Set **Início do debate** and its date in the operator page before sending. Sheet
+timestamps always use elapsed debate time, even if the page displays clock time.
+Merged blocks use the first source's start and last source's end. Time values are
+literal strings; transcript text beginning with `=` is also written as text.
+
+Label a finalized block, correct it, then click **Enviar** or press `S`. Sending
+immediately disables the button and locks text, labels, merge/unmerge, and moving
+text into or out of that block. A successful send shows **enviado à planilha**.
+The lock survives refreshes and server restarts. Make later corrections directly
+in Sheets: the app never updates or resends a successfully delivered snapshot.
+Copying and navigation remain available.
+
+The persistent queue is `data/<session>/sheets_outbox.jsonl`. A confirmed failure
+shows its error on the badge, unlocks the block and enables **Tentar novamente**.
+A timeout can mean Google received the row even though its reply was lost; the
+app shows **verificando envio…**, keeps the snapshot locked and reconciles in the
+background. The append and a unique delivery receipt are written in one atomic
+Sheets batch, so retries cannot add the same queued item twice. Receipts use
+developer metadata, without adding visible columns. Keep this queue with the
+session; deleting it removes local delivery history. Do not remove the receipt
+metadata while any send is pending. Google limits metadata storage; if that
+limit is reached, a send fails without inserting its row.
+
+New rows are appended after the tab's last row containing values; blank dropdowns
+and formatting alone do not count as data. Keep this tab for transcript records,
+without prefilled statuses or unrelated values below them. Gaps among existing
+records are left in place. Existing rows, formatting and dropdown rules are not
+rewritten. Separate operator sessions can append concurrently, but sending the
+same speech from different sessions creates separate rows. Run one server per
+local session directory.
+
+If `SEND_TARGET` is omitted, a configured `SPREADSHEET_ID` selects Sheets;
+otherwise the server uses the existing Aletheia integration.
+
+To send every block to both destinations with the same **Enviar** button, set
+`SEND_TARGET=sheets,platform` and configure both. Sheets stays the primary: it
+locks sent blocks and drives each block's status, while the platform's progress
+appears as a second item in the status bar. Sending is refused until both are
+configured. If Sheets rejects a block, nothing is queued for the platform either.
+
 ## Sending blocks to Aletheia
 
-The operator only decides who is speaking. Each block labelled 1 or 2 is sent as
-it is, as a **draft** on the platform's debate. Joining blocks into speeches,
-removing duplicates and choosing claims all happen on the platform.
+The existing Aletheia integration sends each selected block (including a merged
+block) as a **draft** on the platform's debate. The operator chooses the speaker,
+corrects the text and can combine adjacent blocks before sending. Removing
+duplicates and choosing claims happen on the platform. Set `SEND_TARGET=platform`
+to use this integration alone, or `SEND_TARGET=sheets,platform` to send to both.
 
 1. In `.env`, set `ALETHEIA_URL`, `ORY_URL` (the platform's Ory project URL),
    `ALETHEIA_DEBATE_ID`, `ALETHEIA_PERSONALITY_LULA`,
@@ -198,8 +295,7 @@ removing duplicates and choosing claims all happen on the platform.
    ```
 3. Start `server.py`. In the page, label a block and press `S`. The block is
    queued without a confirmation, and the selection moves to the next block.
-   - A block that is still live can be sent right away: it waits and goes out
-     with its final text.
+   - A block that is still live cannot be sent; wait until it is finalized.
    - To fix a wrong speaker, change the label and press `S` again. A corrected
      draft is sent, and the old one stays on the platform to be rejected there.
    - An edited block can be sent again with the corrected text.
@@ -243,12 +339,16 @@ wsclient.py          minimal WebSocket client (standard library)
 server.py            operator page server (localhost only)
 static/index.html    operator page
 platform_client.py   Aletheia login, send queue, review commands
+sheets_client.py     Google Sheets sending, delivery receipts and read-only check
+requirements.txt     optional Google Sheets dependencies
 contexto.txt         context terms for the 2026 debate
 
 data/<session>/blocks.jsonl   one JSON line per block update (last line per id wins)
 data/<session>/labels.json    speaker labels (server.py)
 data/<session>/edits.json     text edits (server.py)
+data/<session>/operator.json  session time settings and reversible block merges
 data/<session>/outbox.jsonl   send queue (server.py)
+data/<session>/sheets_outbox.jsonl  immutable Sheets snapshots and delivery status
 data/<session>/status.json    recorder heartbeat, every 2 s
 data/<session>/audio/         16 kHz mono WAV chunks
 ```

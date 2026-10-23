@@ -16,6 +16,12 @@ data/
 .env.*
 !.env.example
 .aletheia_session.json*
+# Service account keys accidentally copied into the project
+aletheiatranscription2026-*.json
+*-credentials.json
+
+# Python virtual environment (uv)
+.venv/
 
 __pycache__/
 *.pyc
