@@ -317,6 +317,22 @@ appended after an edit. Pressing `S` twice on the same block is therefore skippe
 by the platform. The same block sent from two machines arrives as two drafts, so
 the platform side has to deduplicate them.
 
+## Checkability scores (Jev)
+
+`checkability.py` asks Jev, TypeSafe's evaluation model, how checkable each
+finalized block is, from 0 (attacks, opinion, promises) to 100 (a specific fact
+about the past or present). It runs as a third process and writes
+`checkability.jsonl` in the session folder:
+
+```bash
+python3 checkability.py --data-dir data/debate --watch
+python3 checkability.py --check      # scores the reference examples
+```
+
+Set `TYPESAFE_API_KEY` and `JEV_MODEL` in `.env`. See
+[CHECKABILITY.md](CHECKABILITY.md) for the rubric, the formula, the context sent
+with each block and mock mode.
+
 ## Resilience
 
 - **Reconnects:** if the WebSocket drops or Soniox stops answering for 20 s, the
@@ -342,6 +358,8 @@ platform_client.py   Aletheia login, send queue, review commands
 sheets_client.py     Google Sheets sending, delivery receipts and read-only check
 requirements.txt     optional Google Sheets dependencies
 contexto.txt         context terms for the 2026 debate
+checkability.py      Jev checkability scores per block (rubric, context, store)
+jev_client.py        TypeSafe API client for Jev (retries, mock mode)
 
 data/<session>/blocks.jsonl   one JSON line per block update (last line per id wins)
 data/<session>/labels.json    speaker labels (server.py)
@@ -349,6 +367,7 @@ data/<session>/edits.json     text edits (server.py)
 data/<session>/operator.json  session time settings and reversible block merges
 data/<session>/outbox.jsonl   send queue (server.py)
 data/<session>/sheets_outbox.jsonl  immutable Sheets snapshots and delivery status
+data/<session>/checkability.jsonl  Jev scores per block (last line per block id wins)
 data/<session>/status.json    recorder heartbeat, every 2 s
 data/<session>/audio/         16 kHz mono WAV chunks
 ```
