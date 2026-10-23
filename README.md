@@ -180,6 +180,10 @@ one by default, or the block you clicked or moved to with ↑/↓.
   hints only and never become labels by themselves. After you label a block,
   later blocks with the same hint show a dashed suggestion (`→ Lula?`). Hints
   restart after a reconnect.
+- **Checkability:** when `checkability.py` is running, each scored block shows
+  its score next to the speaker: grey below 25%, yellow from 25% to 60%, green
+  above 60%. A faded score means the text changed and a new score is pending.
+  Hover for the method and model. Scores are not sent to Sheets or the platform.
 - **Number highlights:** numbers, percentages, dates and amounts are highlighted,
   because those are the claims most worth checking.
 - **Editing:** when the start of one person's speech lands in the previous
