@@ -169,8 +169,16 @@ changed since it was scored and `checkability.py` has not rescored it yet. The
 tooltip shows the method, the model and the rubric version, and flags mock
 scores. Unscored blocks, including mediator blocks, have no badge.
 
-Scores stay local. They are not sent to Google Sheets or to the Aletheia
-platform.
+## Google Sheets
+
+When a block is sent to Sheets, its score goes in column **E — Checabilidade**
+as a whole number from 0 to 100. Status moves to F and Colaborador to G. The
+row is a snapshot taken when **Enviar** is pressed and is never updated. E is
+left empty when there is no score yet, when the text changed since it was
+scored, or when the score is a mock (`jev-mock`). Several blocks sent together
+get the best score among them, as combined blocks do.
+
+Scores are not sent to the Aletheia platform.
 
 ## Configuration
 
