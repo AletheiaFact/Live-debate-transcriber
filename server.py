@@ -444,7 +444,7 @@ def enqueue(outbox, label, blocks, settings, score=""):
     if isinstance(outbox, sheets_client.Outbox):
         return outbox.enqueue(label, blocks, settings, score)
     # Platform ids are deterministic, so a resend of a queued or sent block is a no-op there.
-    return outbox.enqueue(label, blocks, waiting=False)
+    return outbox.enqueue(label, blocks, waiting=False, checkability=score)
 
 
 def _is_final(block):

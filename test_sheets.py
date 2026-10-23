@@ -67,7 +67,7 @@ class QueueTests(unittest.TestCase):
         sent = []
         missing = []
         self.extra = [SimpleNamespace(cfg=SimpleNamespace(missing=lambda: missing),
-                                      enqueue=lambda label, blocks, waiting: sent.append((label, blocks)))]
+                                      enqueue=lambda label, blocks, waiting, checkability: sent.append((label, blocks)))]
         missing.append("ALETHEIA_URL")
         self.assertIn("ALETHEIA_URL", self.send(["b"])[1]["error"])
         self.assertEqual((sent, self.outbox.items), ([], {}))
@@ -77,6 +77,33 @@ class QueueTests(unittest.TestCase):
                          [("1", ["=literal claim b"])])
         self.assertEqual(self.send(["b"])[0], 400)  # Sheets rejects the resend before the platform sees it
         self.assertEqual(len(sent), 1)
+
+    def test_platform_turn_carries_checkability_only_when_enabled(self):
+        import platform_client
+        self.score("b", "=literal claim b", 72.4)
+        outbox = platform_client.Outbox.__new__(platform_client.Outbox)  # no worker thread, no network
+        outbox.__dict__.update(cfg=SimpleNamespace(machine="m1", personalities={"1": "p-lula"}, aletheia_url="http://x",
+                                                   debate_id="d", send_checkability=False, missing=lambda: []),
+                               path=os.path.join(self.temp.name, "outbox.jsonl"), lock=threading.Lock(),
+                               wake=threading.Event(), items={}, last_error=None, last_ok_at=None)
+        self.extra = [outbox]
+        self.assertEqual(self.send(["b"])[0], 200)
+        item = next(iter(outbox.items.values()))
+        self.assertEqual(item["checkability"], 72)
+        turns = []
+        def http_json(method, url, body=None, headers=None, timeout=15):
+            turns.append(body["turns"][0])
+            return 201, {"drafts": [{"externalId": item["externalId"], "turnId": "t1"}]}
+        originals = platform_client.http_json, platform_client.read_session
+        self.addCleanup(lambda: setattr(platform_client, "http_json", originals[0]) or
+                        setattr(platform_client, "read_session", originals[1]))
+        platform_client.http_json, platform_client.read_session = http_json, lambda: {"token": "tok"}
+        outbox._send(item)
+        outbox.cfg.send_checkability = True
+        outbox._send(item)
+        outbox._send({**item, "checkability": ""})
+        self.assertEqual(["checkability" in t for t in turns], [False, True, False])
+        self.assertEqual(turns[1]["checkability"], 72)
 
     def test_success_stays_locked_after_restart(self):
         self.send(["b"])

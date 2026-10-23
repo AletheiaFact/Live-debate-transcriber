@@ -184,7 +184,8 @@ one by default, or the block you clicked or moved to with ↑/↓.
   its score next to the speaker: grey below 25%, yellow from 25% to 60%, green
   above 60%. A faded score means the text changed and a new score is pending.
   Hover for the method and model. Sending to Sheets writes the score in
-  column E; it is not sent to the platform.
+  column E. Sending to the platform includes it only with
+  `ALETHEIA_SEND_CHECKABILITY=1` (see CHECKABILITY.md).
 - **Number highlights:** numbers, percentages, dates and amounts are highlighted,
   because those are the claims most worth checking.
 - **Editing:** when the start of one person's speech lands in the previous

@@ -178,7 +178,17 @@ left empty when there is no score yet, when the text changed since it was
 scored, or when the score is a mock (`jev-mock`). Several blocks sent together
 get the best score among them, as combined blocks do.
 
-Scores are not sent to the Aletheia platform.
+## Aletheia platform
+
+With `ALETHEIA_SEND_CHECKABILITY=1`, each turn sent to the platform also carries
+`"checkability": <0-100>`. The value follows the same rules as the Sheets column:
+it is the score shown when **Enviar** is pressed, and the field is omitted when
+there is no current, real score. The flag is off by default. Turn it on only once
+the platform accepts the field, because a platform that rejects unknown fields
+would fail every send.
+
+The platform skips a turn whose `externalId` it already has, so a score that
+arrives after a block was sent does not reach the existing draft.
 
 ## Configuration
 

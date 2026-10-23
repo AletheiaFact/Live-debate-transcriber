@@ -5,7 +5,9 @@ Uses PR AletheiaFact/aletheia#2655:
 POST /api/claim/debate/:debateId/append with
 {"turns": [{personality, text, externalId, startedAt}], "isLive": true}.
 A turn whose externalId is already on the debate is skipped by the platform,
-so resending is safe.
+so resending is safe. With ALETHEIA_SEND_CHECKABILITY=1 each turn also carries
+"checkability" (0-100) when the block has a current score; leave it off until
+the platform accepts the field.
 
 Auth: each operator logs in with their own fact-checker account through
 Ory's native (API) login flow. The resulting session token is sent as
@@ -62,6 +64,7 @@ class Config:
         self.personalities = {label: os.environ.get(env, "") for label, env in LABEL_TO_ENV.items()}
         # Part of every externalId, so it must differ between the 3-4 machines.
         self.machine = os.environ.get("ALETHEIA_MACHINE") or f"{getpass.getuser()}-{socket.gethostname().split('.')[0]}"
+        self.send_checkability = os.environ.get("ALETHEIA_SEND_CHECKABILITY", "").strip().lower() in ("1", "true", "yes")
 
     def missing(self):
         names = {"ALETHEIA_URL": self.aletheia_url, "ORY_URL": self.ory_url, "ALETHEIA_DEBATE_ID": self.debate_id}
@@ -256,7 +259,7 @@ class Outbox:
             f.flush()
             os.fsync(f.fileno())
 
-    def enqueue(self, label, blocks, waiting=False):
+    def enqueue(self, label, blocks, waiting=False, checkability=""):
         # The label is part of the id: relabelling a sent block and sending it
         # again creates a corrected draft instead of being skipped.
         if len(blocks) == 1:
@@ -279,6 +282,7 @@ class Outbox:
                 "blockIds": [b["id"] for b in blocks],
                 "text": None if waiting else " ".join(b["text"].strip() for b in blocks),
                 "startedAt": blocks[0]["start"],
+                "checkability": checkability,
                 "status": "waiting" if waiting else "queued",
                 "attempts": 0,
                 "next_try": 0,
@@ -356,6 +360,8 @@ class Outbox:
             return self._retry_later(item, "auth", "não logado: rode python3 platform_client.py login")
         turn = {"personality": item["personality"], "text": item["text"],
                 "externalId": item["externalId"], "startedAt": item["startedAt"]}
+        if self.cfg.send_checkability and item.get("checkability") not in (None, ""):
+            turn["checkability"] = item["checkability"]
         url = f"{self.cfg.aletheia_url}/api/claim/debate/{self.cfg.debate_id}/append"
         try:
             status, body = http_json("POST", url, {"turns": [turn], "isLive": True},
