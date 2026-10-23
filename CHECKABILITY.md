@@ -55,7 +55,7 @@ decides later which percentages to highlight.
   "target_block": "Isso que ele falou é mentira, e eu vou resolver.",
   "speaker": "Lula",
   "previous_blocks": [
-    {"speaker": "Flávio Bolsonaro", "text": "No meu governo a inflação ficou em 4,5% em 2019."}
+    {"speaker": "Flávio Bolsonaro", "text": "No meu governo o desemprego caiu para 7%."}
   ]
 }
 ```
@@ -104,9 +104,30 @@ as any block, and stored with `method: "jev_rerun"`. This happens when:
 Nested combinations use the original blocks as sources. Source scores are kept,
 so *Descombinar* needs no new call.
 
-The maximum can miss a claim that only appears when the blocks are read
-together. If that turns out to matter, compare `max_of_sources` with
+**Known limitation:** the maximum can miss a claim that only appears when the
+blocks are read together. This is accepted; it is handled by the operators, not
+by the code. If it turns out to matter, compare `max_of_sources` with
 `jev_rerun` on real sessions before changing the rule.
+
+### Operator guidance
+
+During the debate, the operators (one or two people) should combine as many
+blocks as make sense:
+
+- Combine a claim with the block that supports or contests it, when the page
+  allows it (see below).
+- Combine consecutive blocks from the same speaker that continue the same point.
+- No extra step is needed: a combined block whose sources' scores do not cover
+  its text is sent to Jev again automatically.
+
+The operator page refuses to combine blocks labelled with different speakers. A
+combined block has a single speaker label and is sent to Sheets and the
+platform under it. So a claim and a reply from the other candidate stay
+separate, and the reply is scored with the claim as context. For example, "Isso
+que ele falou é mentira, e eu vou resolver." after "No meu governo o desemprego
+caiu para 7%." should land in the middle band, roughly 25–60% (level 1). It
+contests a specific figure but states no new fact. Read together with the
+figure as one block, it scores high.
 
 ## Stored result
 

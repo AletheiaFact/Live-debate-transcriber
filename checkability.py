@@ -234,7 +234,7 @@ CHECK_CASES = [
     ("Vou criar 1 milhão de empregos. Em 2022 o desemprego caiu de 11% para 7%.", []),
     ("Você é um mentiroso. Meu governo foi melhor e o seu foi um desastre.", []),
     ("Isso que ele falou é mentira, e eu vou resolver.",
-     [("2", "No meu governo a inflação ficou em 4,5% em 2019.")]),
+     [("2", "No meu governo o desemprego caiu para 7%.")]),
 ]
 
 

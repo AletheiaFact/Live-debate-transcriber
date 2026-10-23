@@ -11,8 +11,24 @@ from jev_client import MOCK_MODEL, TYPESAFE_API_KEY_PLACEHOLDER, JevClient, JevE
 from server import Store
 
 LOW = [0.94, 0.05, 0.01]
+MIDDLE = [0.15, 0.75, 0.10]
 WEAK = [0.10, 0.80, 0.10]
 HIGH = [0.01, 0.04, 0.95]
+
+CONTESTATION = "Isso que ele falou é mentira, e eu vou resolver."
+FIGURE = "No meu governo o desemprego caiu para 7%."
+# Middle band: the block contests a specific figure but states no new fact itself.
+MIDDLE_BAND = (25, 60)
+
+
+def reference_jev(state):
+    """A well-behaved Jev for the reference case: a figure is level 2; contesting one seen in the context, level 1."""
+    if "7%" in state["target_block"]:
+        return HIGH
+    if "mentira" in state["target_block"] and any("7%" in b["text"] for b in state["previous_blocks"]):
+        return MIDDLE
+    return LOW
+
 
 # What a well-behaved Jev returns for the rubric, keyed by target block.
 EXPECTED = {
@@ -159,19 +175,19 @@ class CheckabilityTests(unittest.TestCase):
             self.assertEqual((result["model"], result["rubric_version"], result["method"]),
                              ("jev-1.13.0", RUBRIC_VERSION, "jev_direct"))
 
-    def test_reference_case_sends_previous_block_as_context(self):
+    def test_reference_case_scores_in_the_middle_band_with_context(self):
         state = checkability.check_states()[-1]
         self.assertEqual(state, {
-            "target_block": "Isso que ele falou é mentira, e eu vou resolver.",
+            "target_block": CONTESTATION,
             "speaker": "Lula",
-            "previous_blocks": [{"speaker": "Flávio Bolsonaro",
-                                 "text": "No meu governo a inflação ficou em 4,5% em 2019."}],
+            "previous_blocks": [{"speaker": "Flávio Bolsonaro", "text": FIGURE}],
         })
-        # Jev only sees the figure through the context; without it the block has nothing to resolve.
-        fake = FakeJev(by_state=lambda s: WEAK if any("4,5%" in b["text"] for b in s["previous_blocks"]) else LOW)
-        jev, _ = client(fake)
-        self.assertEqual(checkability.score_state(jev, state)["percentage"], 50)
-        self.assertEqual(checkability.score_state(jev, {**state, "previous_blocks": []})["percentage"], 3.5)
+        jev, _ = client(FakeJev(by_state=reference_jev))
+        with_context = checkability.score_state(jev, state)
+        alone = checkability.score_state(jev, {**state, "previous_blocks": []})
+        self.assertEqual(with_context["probabilities"].index(max(with_context["probabilities"])), 1)
+        self.assertTrue(MIDDLE_BAND[0] <= with_context["percentage"] <= MIDDLE_BAND[1], with_context["percentage"])
+        self.assertGreater(with_context["percentage"], alone["percentage"])
 
     def test_context_is_limited_and_keeps_the_end(self):
         previous = [{"id": f"p{i}", "text": f"block {i} " + "palavra " * 100 + "fim"} for i in range(5)]
@@ -292,6 +308,39 @@ class SessionScoringTests(unittest.TestCase):
         self.assertEqual(score_pending(self.dir, mock, Scores(self.dir)), 0)
         self.assertEqual(self.run_pass(), 3)
         self.assertEqual({i["model"] for i in Scores(self.dir).items.values()}, {"jev-1.13.0"})
+
+    def test_reference_case_combined_scores_high(self):
+        """The operator combines the figure with the block that contests it.
+
+        The page only combines blocks with at most one speaker label, so both
+        blocks are left unlabelled here.
+        """
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        store = Store(temp.name)
+        with open(store.blocks_path, "w", encoding="utf-8") as f:
+            for bid, text in [("fig", FIGURE), ("con", CONTESTATION)]:
+                f.write(json.dumps(dict(id=bid, text=text, final=True, status="ok",
+                                       start="2026-10-23T00:01:00-04:00")) + "\n")
+        fake = FakeJev(by_state=reference_jev)
+        jev, _ = client(fake)
+        # Combined before the sources were scored: Jev reads the figure and the contestation together.
+        gid = store.merge_down("fig")
+        score_pending(temp.name, jev, Scores(temp.name))
+        item = Scores(temp.name).get(gid)
+        self.assertEqual(item["method"], "jev_rerun")
+        self.assertEqual(item["state"]["target_block"], f"{FIGURE} {CONTESTATION}")
+        self.assertGreater(item["percentage"], 90)
+        # Combined after both were scored: the figure's own score wins, with no new call.
+        store.unmerge(gid)
+        score_pending(temp.name, jev, Scores(temp.name))
+        self.assertTrue(MIDDLE_BAND[0] <= Scores(temp.name).get("con")["percentage"] <= MIDDLE_BAND[1])
+        calls = len(fake.requests)
+        gid = Store(temp.name).merge_down("fig")
+        score_pending(temp.name, jev, Scores(temp.name))
+        item = Scores(temp.name).get(gid)
+        self.assertEqual((item["method"], item["best_source_id"], len(fake.requests)), ("max_of_sources", "fig", calls))
+        self.assertGreater(item["percentage"], 90)
 
     def test_failure_stores_nothing(self):
         jev, _ = client(FakeJev([(401, "bad key")]))
