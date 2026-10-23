@@ -152,6 +152,34 @@ figure as one block, it scores high.
 Because the raw probabilities are kept, the formula or the strategy for
 combined blocks can change later without calling Jev again.
 
+## Operator page
+
+`server.py` reads `checkability.jsonl` and shows each block's score next to the
+speaker:
+
+| Badge | Range |
+|---|---|
+| grey outline | below 25% |
+| yellow | 25% to 60% |
+| green | above 60% |
+
+The bands are `CHECK_MID` and `CHECK_HIGH` in `static/index.html`. They live
+only in the UI, not in the stored scores. A faded badge means the block's text
+changed since it was scored and `checkability.py` has not rescored it yet. The
+tooltip shows the method, the model and the rubric version, and flags mock
+scores. Unscored blocks, including mediator blocks, have no badge.
+
+## Google Sheets
+
+When a block is sent to Sheets, its score goes in column **E — Checabilidade**
+as a whole number from 0 to 100. Status moves to F and Colaborador to G. The
+row is a snapshot taken when **Enviar** is pressed and is never updated. E is
+left empty when there is no score yet, when the text changed since it was
+scored, or when the score is a mock (`jev-mock`). Several blocks sent together
+get the best score among them, as combined blocks do.
+
+Scores are not sent to the Aletheia platform.
+
 ## Configuration
 
 | Variable | Default | |

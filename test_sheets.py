@@ -47,7 +47,7 @@ class QueueTests(unittest.TestCase):
 
     def test_elapsed_timestamps_midnight_and_column_mapping(self):
         row = transcript_row("1", [self.store.state()["blocks"][1]], self.store.operator["settings"])
-        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "Novo"])
+        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "", "Novo"])
         self.assertFalse(self.store.operator["settings"]["show_minutage"])
         with self.assertRaises(ValueError):
             transcript_row("1", [self.store.state()["blocks"][1]], {})
@@ -127,6 +127,22 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(restored["status"], "verifying")
         self.assertTrue(restored["uncertain"])
         self.assertTrue(reloaded.locked("b"))
+
+    def score(self, bid, text, percentage, model="jev-1.13.0"):
+        with open(self.store.scores_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"block_id": bid, "percentage": percentage, "method": "jev_direct", "model": model,
+                                "rubric_version": 1, "state": {"target_block": text}}) + "\n")
+
+    def test_checkability_goes_to_column_e_only_when_current_and_real(self):
+        self.score("b", "=literal claim b", 72.4)
+        self.assertEqual(self.send(["b"])[0], 200)
+        row = list(self.outbox.items.values())[-1]["row"]
+        self.assertEqual(row[3:], ["=literal claim b", 72, "Novo"])
+        for bid, text, model in [("a", "texto antigo", "jev-1.13.0"), ("c", "=literal claim c", "jev-mock")]:
+            self.store.set_label(bid, "1")
+            self.score(bid, text, 90.0, model)
+            self.assertEqual(self.send([bid])[0], 200)
+            self.assertEqual(list(self.outbox.items.values())[-1]["row"][4], "", f"{model} {text}")
 
     def test_merge_snapshot_end_and_unmerge_lock(self):
         gid = self.store.merge_down("b")
@@ -231,14 +247,22 @@ class ClientTests(unittest.TestCase):
         return Request(commit)
 
     def test_literal_values_no_extra_columns_and_idempotent_retry(self):
+        self.item["row"] = ["00:01:00", "00:01:07", "Lula", "=literal text", 72, "Novo"]
         self.client.send(self.item)
         self.client.send(self.item)
         self.assertEqual(len(self.rows), 1)
         row = self.rows[0]
         self.assertEqual(row["fields"], "userEnteredValue")
         values = row["rows"][0]["values"]
-        self.assertEqual(len(values), 5)  # F and later columns are untouched
+        self.assertEqual(len(values), 6)  # G (Colaborador) and later columns are untouched
         self.assertEqual(values[3], {"userEnteredValue": {"stringValue": "=literal text"}})
+        self.assertEqual(values[4], {"userEnteredValue": {"numberValue": 72}})
+        self.assertEqual(values[5], {"userEnteredValue": {"stringValue": "Novo"}})
+
+    def test_snapshot_queued_before_the_checkability_column_keeps_status_in_f(self):
+        self.client.send(self.item)  # the old A:E row: ..., text, "Novo"
+        values = [v["userEnteredValue"]["stringValue"] for v in self.rows[0]["rows"][0]["values"]]
+        self.assertEqual(values, ["00:01:00", "00:01:07", "Lula", "=literal text", "", "Novo"])
 
     def test_response_loss_recovers_without_second_append(self):
         self.lose_reply = True

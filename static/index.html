@@ -73,6 +73,11 @@
   .send-waiting, .send-queued, .send-sending, .send-verifying, .send-error, .send-auth { background: #fff4d6; color: #7a5a00; }
   .send-sent, .send-skipped { background: #e3f4e8; color: var(--ok); }
   .send-failed { background: #fde2e0; color: var(--alarm); }
+  .chk { font-size: .7rem; font-weight: 700; border-radius: 4px; padding: 0 .4em; font-variant-numeric: tabular-nums; }
+  .chk-low { border: 1px solid var(--line); color: var(--muted); font-weight: 600; }
+  .chk-mid { background: #fff4d6; color: #7a5a00; }
+  .chk-high { background: var(--ok); color: #fff; }
+  .chk.stale { opacity: .45; }
   .edited-tag { font-size: .7rem; font-style: italic; color: var(--muted); }
   .editor textarea { width: 100%; min-height: 4.5em; font: inherit; font-size: 1.05rem; line-height: 1.5;
                      padding: .35rem .5rem; border: 2px solid var(--target); border-radius: 6px; resize: vertical; }
@@ -121,6 +126,9 @@
 "use strict";
 const NAMES = { "1": "Lula", "2": "Flávio", "M": "Mediador" };
 const POLL_MS = 2000;
+// Checkability bands, in percent (CHECKABILITY.md); the backend applies no threshold.
+const CHECK_MID = 25;
+const CHECK_HIGH = 60;
 const STALE_SECONDS = 60;
 
 const $ = (sel) => document.querySelector(sel);
@@ -134,6 +142,7 @@ let stateRevision = 0; // ignore polls started before a send was acknowledged
 let stateRequest = 0;
 let appliedStateRequest = 0;
 let labels = {};
+let checkability = {};        // block id -> {percentage, method, model, rubric_version, stale}
 let platform = null;
 let extraDestinations = [];  // destinations that also receive every send; status bar only
 let sendByBlock = new Map();  // block id -> outbox item covering it
@@ -294,6 +303,8 @@ function buildBlock(b, label, suggestion) {
   spk.className = "spk";
   spk.textContent = NAMES[label] || "";
   meta.append(time, spk);
+  const score = checkability[b.id];
+  if (score) meta.append(checkBadge(score));
   if (b.merged) {
     const tag = document.createElement("span");
     tag.textContent = `${b.source_ids.length} blocos combinados`;
@@ -386,6 +397,21 @@ function buildBlock(b, label, suggestion) {
   return el;
 }
 
+function checkBand(percentage) {
+  return percentage > CHECK_HIGH ? "high" : percentage >= CHECK_MID ? "mid" : "low";
+}
+
+function checkBadge(score) {
+  const badge = document.createElement("span");
+  badge.className = `chk chk-${checkBand(score.percentage)}` + (score.stale ? " stale" : "");
+  badge.textContent = `${Math.round(score.percentage)}%`;
+  const how = { jev_direct: "Jev", max_of_sources: "maior nota entre os blocos combinados", jev_rerun: "Jev, bloco combinado" };
+  badge.title = `Checabilidade ${score.percentage}% (${how[score.method] || score.method}; ${score.model}, rubrica v${score.rubric_version})` +
+    (score.model === "jev-mock" ? " — nota simulada, sem valor real" : "") +
+    (score.stale ? " — texto mudou, aguardando nova nota" : "");
+  return badge;
+}
+
 function matches(b, q) {
   if (!q) return true;
   return fold(`${b.text || ""} ${NAMES[labels[b.id]] || ""} ${blockTime(b)}`).includes(q);
@@ -411,7 +437,7 @@ function render() {
     const sig = JSON.stringify([b.status, b.text, b.error, label, b.final, b.speaker_hint, suggestion, b.edited, b.id === editingId,
       sent?.status, sent?.error, !!platform?.configured, platform?.target, settings, b.merged_edited, b.source_ids,
       isLocked(b.id), sendPending.has(b.id), sendUnconfirmed.has(b.id), labelPending.has(b.id), neighbour(b.id, 1)?.id, neighbour(b.id, 1)?.final,
-      isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id]]);
+      isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id], checkability[b.id]]);
     const cur = rendered.get(b.id);
     if (!cur) {
       const el = buildBlock(b, label, suggestion);
@@ -498,6 +524,7 @@ async function refreshState() {
     appliedStateRequest = request;
     blocks = data.blocks;
     labels = data.labels;
+    checkability = data.checkability || {};
     platform = data.platform;
     extraDestinations = data.extra_destinations || [];
     if (!settingsPending) settings = data.settings || {};

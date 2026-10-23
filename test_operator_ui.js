@@ -83,6 +83,16 @@ async function main() {
   await run('sendBlock("a")');
   assert.equal(run('sendUnconfirmed.has("a")'), true);
   assert.equal(run('isLocked("a")'), true, "lost POST and state responses must keep the block locked");
+  assert.equal(run('JSON.stringify([0, 24.9, 25, 60, 60.1, 100].map(checkBand))'), JSON.stringify(["low", "low", "mid", "mid", "high", "high"]));
+  run('checkability = {a: {percentage: 72.4, method: "max_of_sources", model: "jev-1.13.0", rubric_version: 1, stale: false}}');
+  const scored = run('buildBlock(blocks[0], "1", "")').children[0].children.find(x => x?.className?.startsWith("chk"));
+  assert.equal(scored.textContent, "72%");
+  assert.equal(scored.className, "chk chk-high");
+  run('checkability.a.stale = true');
+  assert.match(run('buildBlock(blocks[0], "1", "")').children[0].children.find(x => x?.className?.startsWith("chk")).className, / stale$/);
+  run('checkability = {}');
+  assert.ok(!run('buildBlock(blocks[0], "1", "")').children[0].children.some(x => x?.className?.startsWith("chk")));
+  console.log("UI checkability badge checks passed.");
   console.log("UI timestamp, duplicate-click, sent-lock and retry checks passed.");
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

@@ -180,6 +180,11 @@ one by default, or the block you clicked or moved to with ↑/↓.
   hints only and never become labels by themselves. After you label a block,
   later blocks with the same hint show a dashed suggestion (`→ Lula?`). Hints
   restart after a reconnect.
+- **Checkability:** when `checkability.py` is running, each scored block shows
+  its score next to the speaker: grey below 25%, yellow from 25% to 60%, green
+  above 60%. A faded score means the text changed and a new score is pending.
+  Hover for the method and model. Sending to Sheets writes the score in
+  column E; it is not sent to the platform.
 - **Number highlights:** numbers, percentages, dates and amounts are highlighted,
   because those are the claims most worth checking.
 - **Editing:** when the start of one person's speech lands in the previous
@@ -220,7 +225,7 @@ Run this read-only check before starting `server.py`:
 python sheets_client.py
 ```
 
-The tab must have the following headers in **A6:F6**. Each selected block becomes
+The tab must have the following headers in **A6:G6**. Each selected block becomes
 one row, starting at **row 7** when the template has no transcript data:
 
 | Column | Value sent |
@@ -229,8 +234,19 @@ one row, starting at **row 7** when the template has no transcript data:
 | B — Fim | Elapsed end, `HH:MM:SS` |
 | C — Etiqueta | Operator's speaker label: Lula or Flávio |
 | D — Transcrição | Final text, including operator corrections and merges |
-| E — Status | `Novo` |
-| F — Colaborador | Left for reviewers |
+| E — Checabilidade | Jev checkability score, `0`–`100` (a number), or empty when no current score is ready |
+| F — Status | `Novo` |
+| G — Colaborador | Left for reviewers |
+
+To add the Checabilidade column to an existing tab, right-click column E,
+choose **Insert 1 column left**, and type `Checabilidade` in E6. Existing rows,
+statuses and dropdowns move to F and G. `python sheets_client.py` confirms the
+headers. Rows queued before the update are sent with an empty E.
+
+The score is the one shown on the block when you press **Enviar**. It is left
+empty if `checkability.py` has not scored the block yet, if the text changed
+since it was scored, or if the score is a mock. Sent rows are never updated, so
+wait for the badge when the score matters.
 
 Set **Início do debate** and its date in the operator page before sending. Sheet
 timestamps always use elapsed debate time, even if the page displays clock time.
