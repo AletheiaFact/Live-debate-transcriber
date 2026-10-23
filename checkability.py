@@ -9,7 +9,8 @@ except checkability.jsonl, which only this script writes.
     python3 checkability.py --check                          # score the reference examples
 
 A block is (re)scored when its Jev input changes: text, speaker, context,
-model or RUBRIC_VERSION. Combined blocks are not scored yet.
+model or RUBRIC_VERSION. A combined block takes the best score of its sources,
+or is sent to Jev again when those scores do not cover its current text.
 """
 
 import argparse
@@ -57,6 +58,8 @@ CONTEXT_CHARS = 400  # per previous block, keeping its end; the target is never 
 SPEAKERS = {"1": "Lula", "2": "Flávio Bolsonaro", "M": "mediador"}
 SETTLE_SECONDS = 5  # give the operator time to label a just-finalized block
 METHOD_JEV_DIRECT = "jev_direct"
+METHOD_MAX_OF_SOURCES = "max_of_sources"
+METHOD_JEV_RERUN = "jev_rerun"
 
 
 def percentage(probabilities):
@@ -93,7 +96,7 @@ def build_state(block, previous, labels):
     }
 
 
-def score_state(client, state):
+def score_state(client, state, method=METHOD_JEV_DIRECT):
     """Returns {percentage, probabilities, confidence, model, rubric_version, method}."""
     result = client.evaluate(state, QUESTIONS)
     answer = result["answers"][QUESTION_NAME]
@@ -103,7 +106,7 @@ def score_state(client, state):
         "confidence": answer["confidence"],
         "model": result["model"],
         "rubric_version": RUBRIC_VERSION,
-        "method": METHOD_JEV_DIRECT,
+        "method": method,
     }
 
 
@@ -111,10 +114,33 @@ def score_block(client, block, previous, labels):
     return score_state(client, build_state(block, previous, labels))
 
 
-def input_hash(state, model):
-    key = json.dumps({"state": state, "model": model, "rubric_version": RUBRIC_VERSION},
-                     sort_keys=True, ensure_ascii=False)
-    return hashlib.sha1(key.encode()).hexdigest()
+def input_hash(state, model, sources=()):
+    key = {"state": state, "model": model, "rubric_version": RUBRIC_VERSION}
+    if sources:
+        key["sources"] = [s["input_hash"] for s in sources]
+    return hashlib.sha1(json.dumps(key, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def covering_sources(block, scores, model):
+    """Current source scores of a combined block, or None when max_of_sources would be wrong.
+
+    The maximum only describes the combined block when its sources' scored texts,
+    joined, are exactly its text: an edit or restore after combining, a source
+    never scored, or a score from another model or rubric means calling Jev again.
+    """
+    sources = [scores.get(sid) for sid in block["source_ids"]]
+    if any(s is None or s.get("method") != METHOD_JEV_DIRECT or s.get("rubric_version") != RUBRIC_VERSION
+           or input_hash(s["state"], model) != s["input_hash"] for s in sources):
+        return None
+    joined = " ".join(s["state"]["target_block"] for s in sources)
+    return sources if joined == " ".join(block["text"].split()) else None
+
+
+def max_of_sources(sources):
+    """The best source's result, never an average: one checkable sentence must not be diluted."""
+    best = max(sources, key=lambda s: s["percentage"])
+    result = {k: best[k] for k in ("percentage", "probabilities", "confidence", "model", "rubric_version")}
+    return {**result, "method": METHOD_MAX_OF_SOURCES}, best["block_id"]
 
 
 class Scores:
@@ -158,7 +184,10 @@ class Scores:
 
 
 def pending(data_dir, scores, model, now=None):
-    """(block, state, digest) for every block whose stored score is missing or stale."""
+    """(block, state, digest, sources) for every block whose stored score is missing or stale.
+
+    sources: the source scores to take the maximum of, or None to call Jev.
+    """
     store = Store(data_dir)  # fresh each pass: the server rewrites labels, edits and merges
     with store.lock:
         blocks = [b for b in store.current_blocks() if is_usable(b)]
@@ -166,16 +195,17 @@ def pending(data_dir, scores, model, now=None):
     now = time.time() if now is None else now
     out = []
     for i, block in enumerate(blocks):
-        if block.get("merged") or labels.get(block["id"]) == "M":
-            continue  # combined blocks wait for the combination decision; the mediator asks, it does not claim
+        if labels.get(block["id"]) == "M":
+            continue  # the mediator asks, it does not claim
         settled = to_epoch(block.get("transcribed_at"))
-        if settled is not None and now - settled < SETTLE_SECONDS:
+        if not block.get("merged") and settled is not None and now - settled < SETTLE_SECONDS:
             continue
         state = build_state(block, blocks[:i], labels)
-        digest = input_hash(state, model)
+        sources = covering_sources(block, scores, model) if block.get("merged") else None
+        digest = input_hash(state, model, sources or ())
         stored = scores.get(block["id"])
         if not stored or stored.get("input_hash") != digest:
-            out.append((block, state, digest))
+            out.append((block, state, digest, sources))
     return out
 
 
@@ -184,9 +214,14 @@ def score_pending(data_dir, client, scores):
     done = 0
     # Mock scores must not satisfy a real key later, so the mock model is part of the hash.
     model = jev_client.MOCK_MODEL if client.is_mock else client.cfg.model
-    for block, state, digest in pending(data_dir, scores, model):
-        item = scores.save(block, score_state(client, state), state, digest)
-        log(f"{block['id']}: {item['percentage']:5.1f}%  {state['target_block'][:70]}")
+    for block, state, digest, sources in pending(data_dir, scores, model):
+        if sources:
+            result, best = max_of_sources(sources)
+            item = scores.save(block, result, state, digest, best_source_id=best)
+        else:
+            method = METHOD_JEV_RERUN if block.get("merged") else METHOD_JEV_DIRECT
+            item = scores.save(block, score_state(client, state, method), state, digest)
+        log(f"{block['id']}: {item['percentage']:5.1f}% {item['method']:<14} {state['target_block'][:70]}")
         done += 1
     return done
 

@@ -77,13 +77,36 @@ blocks before the group are the context.
 
 `python3 checkability.py --data-dir <session> --watch` scores each block about 5
 seconds after it is finalized, to give the operator time to label it. Live
-blocks, gaps, empty blocks and mediator blocks are skipped. Combined blocks are
-not scored yet; their source blocks keep their scores.
+blocks, gaps, empty blocks and mediator blocks are skipped.
 
 A block is scored again only when its Jev input changes: its text, its label,
 the text or labels of its context, `JEV_MODEL` or `RUBRIC_VERSION`. Without
 `--watch` the script scores the pending blocks once and exits. If Jev fails,
 nothing is stored for that block, and `--watch` retries 30 seconds later.
+
+## Combined blocks
+
+A combined block (*Combinar ↓*) gets the **maximum** of its source blocks'
+scores, never the average, so a checkable sentence is not diluted by its
+neighbour (90% + 5% → 90%). This costs no Jev call and is stored with
+`method: "max_of_sources"` and the winning source in `best_source_id`.
+
+The maximum is used only when the sources' scored texts, joined, are exactly the
+combined text, and every source score is current for the model and rubric.
+Otherwise the combined block is sent to Jev again, with the same context rules
+as any block, and stored with `method: "jev_rerun"`. This happens when:
+
+- the combined text was edited, or restored to the transcription, after
+  combining;
+- a source was combined before it was scored, or edited after it was scored;
+- `JEV_MODEL` or `RUBRIC_VERSION` changed since the sources were scored.
+
+Nested combinations use the original blocks as sources. Source scores are kept,
+so *Descombinar* needs no new call.
+
+The maximum can miss a claim that only appears when the blocks are read
+together. If that turns out to matter, compare `max_of_sources` with
+`jev_rerun` on real sessions before changing the rule.
 
 ## Stored result
 
@@ -100,7 +123,7 @@ nothing is stored for that block, and `--watch` retries 30 seconds later.
 | `confidence` | Jev's confidence |
 | `model` | Model that answered, for example `jev-1.13.0` or `jev-mock` |
 | `rubric_version` | `RUBRIC_VERSION` at scoring time |
-| `method` | `jev_direct` for now (planned: `max_of_sources`, `jev_rerun`) |
+| `method` | `jev_direct` (a single block), `max_of_sources` or `jev_rerun` (a combined block) |
 | `input_hash` | Hash of the state, model and rubric version; a mismatch means the score is stale |
 | `state` | The exact state sent to Jev |
 | `scored_at` | When the score was stored |

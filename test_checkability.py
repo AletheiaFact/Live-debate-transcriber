@@ -229,12 +229,52 @@ class SessionScoringTests(unittest.TestCase):
         self.assertEqual(self.run_pass(), 1)
         self.assertEqual(Scores(self.dir).get("b")["percentage"], 97.0)
 
-    def test_combined_blocks_wait_for_the_combination_decision(self):
+    def test_combined_block_takes_the_best_source_without_calling_jev(self):
+        self.store.set_edits({"b": "Isso é mentira, foi 9%"})
+        self.run_pass()
+        calls = len(self.fake.requests)
+        gid = self.store.merge_down("b")
+        self.assertEqual(self.run_pass(), 1)
+        self.assertEqual(len(self.fake.requests), calls)
+        item = Scores(self.dir).get(gid)
+        self.assertEqual((item["method"], item["percentage"], item["best_source_id"], item["source_ids"]),
+                         ("max_of_sources", 97.0, "b", ["b", "c"]))  # 97% + 3.5% -> 97%, never the average
+        self.assertEqual(item["probabilities"], HIGH)
+        self.assertEqual(item["state"]["target_block"], "Isso é mentira, foi 9% Vou resolver")
+        self.assertEqual(self.run_pass(), 0)
+        self.store.unmerge(gid)
+        self.assertEqual(self.run_pass(), 0)  # the sources' scores are still current
+
+    def test_combined_block_is_rerun_when_sources_do_not_cover_its_text(self):
         self.run_pass()
         gid = self.store.merge_down("b")
-        self.assertEqual(self.run_pass(), 0)
-        self.assertIsNone(Scores(self.dir).get(gid))
-        self.assertEqual(Scores(self.dir).get("b")["percentage"], 3.5)  # source scores are kept
+        self.run_pass()
+        self.store.set_edits({gid: "Isso é mentira, o desemprego foi 9% Vou resolver"})
+        calls = len(self.fake.requests)
+        self.assertEqual(self.run_pass(), 1)
+        item = Scores(self.dir).get(gid)
+        self.assertEqual((item["method"], item["percentage"], item["best_source_id"]), ("jev_rerun", 97.0, None))
+        self.assertEqual(self.fake.requests[calls][2]["state"], item["state"])
+        self.assertEqual(item["state"]["previous_blocks"],
+                         [{"speaker": "Flávio Bolsonaro", "text": "O desemprego caiu de 11% para 7%"}])
+
+    def test_combined_before_sources_are_scored_is_rerun(self):
+        gid = self.store.merge_down("b")
+        self.run_pass()
+        item = Scores(self.dir).get(gid)
+        self.assertEqual((item["method"], item["percentage"]), ("jev_rerun", 3.5))
+        self.assertIsNone(Scores(self.dir).get("b"))
+
+    def test_nested_combination_uses_the_original_sources(self):
+        self.store.set_label("a", "")
+        self.run_pass()
+        outer = self.store.merge_down(self.store.merge_down("a"))
+        calls = len(self.fake.requests)
+        self.run_pass()
+        item = Scores(self.dir).get(outer)
+        self.assertEqual(len(self.fake.requests), calls)
+        self.assertEqual((item["method"], item["source_ids"], item["best_source_id"]),
+                         ("max_of_sources", ["a", "b", "c"], "a"))
 
     def test_combined_block_state_uses_the_same_context_rules(self):
         gid = self.store.merge_down("b")
