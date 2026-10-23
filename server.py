@@ -20,6 +20,7 @@ import time
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import platform_client
 import sheets_client
@@ -293,6 +294,7 @@ class Store:
 
 class Handler(BaseHTTPRequestHandler):
     store = None
+    evidence = None  # optional AI jobs; entirely separate from delivery outboxes
     outbox = None  # primary destination: drives block locks and per-block status in the UI
     extra_outboxes = []  # further destinations that receive every send too
 
@@ -307,11 +309,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(403)
         return False
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, filename=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -325,22 +329,40 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             with open(INDEX, "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
+        elif path in ("/debug", "/debug.js", "/debug.css"):
+            filename, ctype = {"/debug": ("debug.html", "text/html"),
+                               "/debug.js": ("debug.js", "text/javascript"),
+                               "/debug.css": ("debug.css", "text/css")}[path]
+            with open(os.path.join(HERE, "static", filename), "rb") as f:
+                self._send(200, f.read(), ctype + "; charset=utf-8")
+        elif path.startswith("/api/ai-debug"):
+            self._debug_get(path)
         elif path == "/api/state":
             state = self.store.state()
             state["platform"] = self.outbox.state()
             state["extra_destinations"] = [o.state() for o in self.extra_outboxes]
+            state["ai_evidence"] = {"enabled": bool(self.evidence and self.evidence.cfg.enabled)}
             self._json(200, state)
+        elif path.startswith("/api/ai-evidence/") and self.evidence:
+            job = self.evidence.get(path.rsplit("/", 1)[-1])
+            if job:
+                job.pop("audit", None)  # operator polling does not need the full audit payload
+            self._json(200 if job else 404, job or {"error": "análise desconhecida"})
         else:
             self.send_error(404)
 
     def do_POST(self):
         if not self._host_ok():
             return
-        if self.path not in ("/api/label", "/api/send", "/api/edit", "/api/settings", "/api/merge", "/api/unmerge"):
+        if self.path.startswith("/api/ai-debug/") and self.path.endswith("/review"):
+            return self._debug_review()
+        if self.path not in ("/api/label", "/api/send", "/api/edit", "/api/settings", "/api/merge", "/api/unmerge", "/api/ai-evidence"):
             return self.send_error(404)
         length = int(self.headers.get("Content-Length") or 0)
         if length > 65536:
             return self.send_error(413)
+        if self.path == "/api/ai-evidence":
+            return self._analyze(length)
         if self.path in ("/api/settings", "/api/merge", "/api/unmerge"):
             try:
                 body = json.loads(self.rfile.read(length))
@@ -370,6 +392,81 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._json(400, {"error": str(e)})
         self._json(200, {"ok": True})
+
+    def _debug_get(self, path):
+        if not self.evidence:
+            return self._json(503, {"error": "Histórico da IA indisponível; verifique a configuração do servidor."})
+        try:
+            query = parse_qs(urlsplit(self.path).query)
+            if path == "/api/ai-debug":
+                data = self.evidence.history(int(query.get("limit", ["100"])[0]))
+                data["enabled"] = self.evidence.cfg.enabled
+            elif path == "/api/ai-debug/review-prompt":
+                from audit_trace import REVIEW_PROMPT
+                data = {"prompt": REVIEW_PROMPT}
+            else:
+                parts = path.split("/")
+                job_id = parts[3] if len(parts) >= 4 else ""
+                if len(parts) == 5 and parts[4] == "export":
+                    data = self.evidence.export(job_id, full=query.get("full") == ["1"])
+                    if data is not None:
+                        suffix = "-full" if query.get("full") == ["1"] else ""
+                        return self._send(200, json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                                          "application/json; charset=utf-8", filename=f"audit-{job_id}{suffix}.json")
+                elif len(parts) == 4:
+                    data = self.evidence.detail(job_id, after=max(0, int(query.get("after", ["0"])[0])))
+                    if data and self.store:
+                        with self.store.lock:
+                            current = next((b for b in self.store.current_blocks() if b["id"] == data["segment_id"]), None)
+                            speaker = {"1": "Lula", "2": "Flávio", "M": "Mediador"}.get(self.store.labels.get(data["segment_id"]), "")
+                            data["input_changed"] = bool(current["text"] != data["input"]["transcription"] or speaker != data["input"]["speaker"]) if current else None
+                else:
+                    data = None
+            self._json(200 if data is not None else 404, data if data is not None else {"error": "análise desconhecida"})
+        except (ValueError, TypeError):
+            self._json(400, {"error": "parâmetros de histórico inválidos"})
+
+    def _debug_review(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= 40000 or not self.evidence:
+                raise ValueError("anotação inválida")
+            parts = self.path.split("/")
+            if len(parts) != 5:
+                raise ValueError("rota inválida")
+            body = json.loads(self.rfile.read(length))
+            self._json(200, self.evidence.review(parts[3], body))
+        except (ValueError, TypeError, KeyError):
+            self._json(400, {"error": "anotação inválida; limite de 8000 caracteres"})
+        except OSError:
+            self._json(500, {"error": "não foi possível salvar a anotação local"})
+
+    def _analyze(self, length):
+        try:
+            if not self.evidence or not self.evidence.cfg.enabled:
+                return self._json(400, {"error": "habilite AI_EVIDENCE_ENABLED em .env"})
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError("esperado {id} ou {segment: {...}}")
+            if "id" in body:
+                # Snapshot the selected, edited/merged block under the store lock.
+                with self.store.lock:
+                    block = next((b for b in self.store.current_blocks() if b["id"] == body["id"]), None)
+                    if not block or not _is_final(block) or not block.get("text", "").strip():
+                        raise ValueError("selecione um bloco finalizado com texto")
+                    segment = {"segment_id": block["id"], "speaker": {"1": "Lula", "2": "Flávio", "M": "Mediador"}.get(self.store.labels.get(block["id"]), ""),
+                               "transcription": block["text"], "language": "pt-BR",
+                               "start_time": block.get("start_ms") / 1000 if block.get("start_ms") is not None else to_epoch(block.get("start")),
+                               "end_time": block.get("end_ms") / 1000 if block.get("end_ms") is not None else None}
+            else:
+                segment = body["segment"]
+            job = self.evidence.submit(segment, refresh=body.get("refresh") is True)
+            return self._json(202, job)
+        except ImportError:
+            return self._json(400, {"error": "instale requirements.txt para usar IA"})
+        except (ValueError, TypeError, KeyError):
+            # ValidationError can include the complete untrusted input; keep it private.
+            return self._json(400, {"error": "solicitação inválida ou limite de análises atingido; verifique o bloco e aguarde análises em andamento"})
 
     def _edit(self, length):
         """{"edits": {block id: text or null}}; several blocks at once for "move text"."""
@@ -474,6 +571,12 @@ def main():
     os.makedirs(args.data_dir, exist_ok=True)
     platform_client.load_dotenv()
     Handler.store = Store(args.data_dir)
+    from ai_evidence import Jobs
+    from ai_config import Config as EvidenceConfig
+    try:
+        Handler.evidence = Jobs(EvidenceConfig.from_env(), args.data_dir)
+    except ValueError:
+        print("IA desabilitada: configuração AI_EVIDENCE inválida", flush=True)
     store = Handler.store
     target = os.environ.get("SEND_TARGET") or ("sheets" if os.environ.get("SPREADSHEET_ID") else "platform")
     targets = [t.strip() for t in target.split(",") if t.strip()]

@@ -92,8 +92,103 @@ it.
 
 ## Running
 
-Use the same `--data-dir` in both terminals (the default is `data/live`). Use a
-new folder to start a clean session.
+Use the same `--data-dir` in every terminal (the default is `data/live`). Use a
+new folder to start a clean session. The core project uses two processes: the
+operator server and the recorder. Optional Jev scoring runs in a third terminal.
+AI evidence analysis and the debug dashboard run inside the operator server.
+
+### Windows quick start (PowerShell)
+
+Open PowerShell in the project root. These commands use the project's virtual
+environment directly; activating it is not required. With `uv` installed, prepare
+the environment once (or update dependencies after pulling changes):
+
+```powershell
+if (-not (Test-Path .venv\Scripts\python.exe)) { uv venv .venv }
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+ffmpeg -version
+```
+
+Install FFmpeg and add it to `PATH` if the last command is not found. Edit `.env`
+to configure `SONIOX_API_KEY` and the desired sending destination. For Sheets,
+set `GOOGLE_APPLICATION_CREDENTIALS`, `SPREADSHEET_ID` and `GOOGLE_SHEETS_TAB` as
+described in [Sending blocks to Google Sheets](#sending-blocks-to-google-sheets).
+For Aletheia, follow [Sending blocks to Aletheia](#sending-blocks-to-aletheia).
+
+To enable the **Analisar com IA** button using Ollama, configure these settings
+in `.env` alongside the existing transcription and sending settings:
+
+```dotenv
+AI_EVIDENCE_ENABLED=true
+AI_EVIDENCE_PROVIDER=ollama
+AI_EVIDENCE_OLLAMA_BASE_URL=http://192.168.0.180:11434/v1
+AI_EVIDENCE_OLLAMA_MODEL=qwen3.5:4b
+AI_EVIDENCE_OLLAMA_REASONING_EFFORT=none
+```
+
+Use your Ollama server's address and an installed model. That server must be
+running and reachable. Configure `AI_EVIDENCE_SPREADSHEET_ID` for the evidence
+workbook and grant the service account Viewer access. This is separate from the
+transcript destination's spreadsheet ID and Editor access. See
+[AI evidence setup](docs/ai_evidence.md) for provider options and full configuration.
+Check model availability and evidence-workbook access before starting:
+
+```powershell
+.\.venv\Scripts\python.exe ai_evidence.py --check
+```
+
+**Terminal 1 — operator page and debug dashboard:**
+
+```powershell
+.\.venv\Scripts\python.exe server.py --data-dir data/debate
+```
+
+Open the [operator page](http://127.0.0.1:8765/) and the
+[debug dashboard](http://127.0.0.1:8765/debug). Both are served on localhost.
+
+**Terminal 2 — recorder:** open another PowerShell terminal in the same project
+root and choose one input:
+
+```powershell
+# Recorded audio/video, played back in real time; replace the path with your file.
+.\.venv\Scripts\python.exe recorder.py --data-dir data/debate --file "C:\path\to\debate.mp4"
+
+# Or a direct stream URL that FFmpeg can read.
+.\.venv\Scripts\python.exe recorder.py --data-dir data/debate --url "https://example.com/stream.m3u8"
+```
+
+On Windows, use `--file` or `--url`; `--device` uses macOS AVFoundation.
+For a rehearsal without Soniox, use a real local audio/video file with `--fake`:
+
+```powershell
+.\.venv\Scripts\python.exe recorder.py --data-dir data/debate --file "C:\path\to\debate.mp4" --fake
+```
+
+`--fake` replaces Soniox transcription with sample text. AI evidence analysis,
+Jev scoring and sending still use their configured services when invoked.
+
+**Terminal 3 — optional checkability scores:**
+
+```powershell
+.\.venv\Scripts\python.exe checkability.py --data-dir data/debate --watch
+```
+
+Set a real `TYPESAFE_API_KEY` in `.env` for meaningful scores. The example
+`your_typesafe_api_key_here` value produces mock scores; an empty key is an error.
+You can omit this process when you only need transcription and AI evidence analysis.
+
+When finalized blocks appear in the operator page, label/correct a block and click
+**Analisar com IA**. Click **Inspecionar análise** to follow its steps in the
+dashboard, inspect model input/output and export audit JSON. Analysis runs on
+request; merely opening the dashboard does not start inference. Full traces are
+available for new analyses; older saved results cannot recover missing steps.
+
+Stop each process with **Ctrl+C**. Restart the relevant processes after changing
+`.env`; restart `server.py` after updating the dashboard or analysis code. Run only
+one operator server per session directory.
+
+### macOS and Linux
 
 **Terminal 1, operator page:**
 
@@ -201,6 +296,16 @@ one by default, or the block you clicked or moved to with ↑/↓.
   *Lacunas* counts transcription gaps.
 
 ## Sending blocks to Google Sheets
+
+Optional **Analisar com IA** retrieves evidence from a separate, read-only
+four-tab workbook and displays provisional findings and original row/source links
+without sending or publishing them. See [AI evidence setup and API](docs/ai_evidence.md)
+for Ollama/OpenAI configuration, validation safeguards, and tests.
+
+Use **Inspecionar IA** in the toolbar (http://127.0.0.1:8765/debug) to inspect
+live analysis steps, exact model inputs and outputs, evidence rankings and reasons
+for withholding a verdict. Saved runs can be compared and exported as audit JSON
+for review in another AI. See [the audit dashboard guide](docs/ai_debug.md).
 
 Install the optional dependencies and configure `.env` (the recorder still needs
 `SONIOX_API_KEY`):

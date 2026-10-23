@@ -85,6 +85,11 @@
   .editor .row .tip { font-size: .72rem; color: var(--muted); margin-left: auto; }
   .editor .save { background: var(--ink); color: #fff; border-color: var(--ink); }
   .err { font-size: .75rem; color: var(--muted); margin-top: .2rem; overflow-wrap: anywhere; }
+  .ai-results { margin-top: .7rem; padding-top: .5rem; border-top: 1px solid var(--line); font-size: .85rem; cursor: default; overflow-wrap: anywhere; }
+  .ai-results p { margin: .35rem 0; white-space: pre-wrap; }
+  .ai-results article { margin-top: .6rem; padding: .5rem; background: var(--bg); border-radius: 5px; }
+  .ai-results a { display: inline-block; margin: .2rem .8rem .2rem 0; color: var(--flavio); }
+  .ai-results summary { cursor: pointer; }
   #jump { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%); display: none;
           font-size: .9rem; padding: .5rem 1.1rem; background: var(--ink); color: #fff; border: 0; border-radius: 999px;
           box-shadow: 0 2px 8px rgba(0,0,0,.25); }
@@ -108,6 +113,7 @@
   <div id="toolbar">
     <input id="search" type="search" placeholder="Filtrar blocos…" autocomplete="off">
     <button id="copyAll">Copiar Lula + Flávio</button>
+    <a href="/debug" target="_blank" rel="noopener">Inspecionar IA</a>
     <span class="keys"><kbd>1</kbd> Lula · <kbd>2</kbd> Flávio · <kbd>M</kbd> mediador · <kbd>0</kbd> limpar · <kbd>S</kbd> enviar · <kbd>E</kbd> editar ·
       <kbd>↑</kbd><kbd>↓</kbd> navegar · <kbd>Esc</kbd> mais recente</span>
   </div>
@@ -150,6 +156,8 @@ const sendPending = new Set(); // disable immediately, before the POST finishes
 const sendUnconfirmed = new Set(); // POST and subsequent state check both lost
 const labelPending = new Set();
 let editingId = null;         // block open in the text editor
+let aiEnabled = false;
+const aiJobs = new Map(); // per-block immutable input snapshots and analysis results
 const SEND_TEXT = { waiting: "envia quando finalizar", queued: "na fila", sending: "enviando…", verifying: "verificando envio…", error: "tentando de novo", auth: "precisa de login", sent: "enviado", skipped: "já estava lá", failed: "falha no envio" };
 const WS_TEXT = { starting: "iniciando", connecting: "conectando", connected: "conectado", reconnecting: "reconectando",
   rotating: "renovando sessão", finishing: "finalizando", closed: "encerrado" };
@@ -392,8 +400,17 @@ function buildBlock(b, label, suggestion) {
       copyText(lineFor(b)).then(() => toast("Bloco copiado"));
     });
     meta.append(copy);
+    if (b.final !== false && b.status === "ok") {
+      const analyze = document.createElement("button");
+      analyze.textContent = aiJobs.get(b.id)?.status === "PROCESSING" ? "Analisando…" : "Analisar com IA";
+      analyze.disabled = !aiEnabled || aiJobs.get(b.id)?.status === "PROCESSING";
+      analyze.title = aiEnabled ? "Buscar evidências para revisão humana" : "Habilite AI_EVIDENCE_ENABLED em .env e reinicie o servidor";
+      analyze.addEventListener("click", ev => { ev.stopPropagation(); analyzeBlock(b.id); });
+      meta.append(analyze);
+    }
   }
   el.append(meta, text);
+  if (aiJobs.has(b.id)) el.append(buildEvidence(b));
   return el;
 }
 
@@ -410,6 +427,116 @@ function checkBadge(score) {
     (score.model === "jev-mock" ? " — nota simulada, sem valor real" : "") +
     (score.stale ? " — texto mudou, aguardando nova nota" : "");
   return badge;
+}
+
+function aiParagraph(parent, text) {
+  const p = document.createElement("p");
+  p.textContent = text;
+  parent.append(p);
+}
+
+function evidenceLink(parent, url, label) {
+  // Even server-generated URLs receive a browser-side scheme check.
+  if (!/^https?:\/\//i.test(url || "")) return;
+  const a = document.createElement("a");
+  a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+  a.textContent = label;
+  a.addEventListener("click", ev => ev.stopPropagation());
+  parent.append(a);
+}
+
+function buildEvidence(b) {
+  const box = document.createElement("section");
+  box.className = "ai-results";
+  box.setAttribute("aria-live", "polite");
+  const job = aiJobs.get(b.id);
+  aiParagraph(box, "Análise por IA · revisão humana obrigatória");
+  if (job.job_id) {
+    const inspect = document.createElement("a");
+    inspect.href = `/debug?run=${encodeURIComponent(job.job_id)}`;
+    inspect.textContent = "Inspecionar análise";
+    inspect.target = "_blank"; inspect.rel = "noopener noreferrer";
+    inspect.addEventListener("click", ev => ev.stopPropagation());
+    box.append(inspect);
+  }
+  if (job.status === "PROCESSING") {
+    aiParagraph(box, "Extraindo afirmações e consultando a base…");
+    return box;
+  }
+  if (job.inputText !== b.text || job.inputSpeaker !== (NAMES[labels[b.id]] || "")) {
+    aiParagraph(box, "O bloco ou o falante mudou após esta análise. Analise novamente para atualizar.");
+  }
+  if (job.error) aiParagraph(box, job.error);
+  const result = job.result;
+  if (!result) return box;
+  const refresh = document.createElement("button");
+  refresh.textContent = "Atualizar base e reanalisar";
+  refresh.addEventListener("click", ev => { ev.stopPropagation(); analyzeBlock(b.id, true); });
+  box.append(refresh);
+  aiParagraph(box, `${result.provider} · ${result.model} · ${result.analyzed_at}`);
+  for (const error of result.errors) aiParagraph(box, error);
+  if (!result.claims.length && result.status === "COMPLETED") aiParagraph(box, "Nenhuma afirmação factual verificável identificada.");
+  const statuses = {MATCH_FOUND: "Registro aplicável encontrado", NO_MATCH: "Sem correspondência na base", REVIEW_REQUIRED: "Revisão necessária", SEARCH_ERROR: "Erro na busca"};
+  const relevance = {DIRECT_MATCH: "Correspondência direta", PARTIAL_MATCH: "Correspondência parcial", BACKGROUND_ONLY: "Contexto", NOT_RELEVANT: "Não relevante"};
+  for (const claim of result.claims) {
+    const article = document.createElement("article");
+    aiParagraph(article, `“${claim.quote}”`);
+    aiParagraph(article, claim.normalized_claim);
+    aiParagraph(article, `${statuses[claim.retrieval_status]} · Sugestão: ${claim.suggested_verdict || "sem veredicto"}`);
+    aiParagraph(article, claim.explanation);
+    aiParagraph(article, `Equipe sugerida: ${claim.assigned_team || (claim.team_candidates.length ? "ambígua: " + claim.team_candidates.join(", ") : "a definir")}`);
+    for (const error of claim.errors) aiParagraph(article, error);
+    for (const e of claim.evidence) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `${e.record_id} · ${e.sheet_name} · ${relevance[e.relevance]}`;
+      details.append(summary);
+      aiParagraph(details, `${e.record_type} · Equipe no registro: ${e.team || "—"}`);
+      aiParagraph(details, `Etiqueta existente (sem conversão automática): ${e.existing_label || "—"}`);
+      aiParagraph(details, e.summary);
+      if (e.basis_quote) aiParagraph(details, `Trecho usado pela IA (confira no registro): ${e.basis_quote}`);
+      if (e.context_compatible !== undefined && e.context_compatible !== null) aiParagraph(details, `Contexto compatível segundo a IA: ${e.context_compatible ? "sim" : "não"}`);
+      aiParagraph(details, `Dados consultados: ${e.retrieved_at}${e.cache_status === "STALE" ? " · CACHE DESATUALIZADO" : ""}`);
+      // Row links are always visible; documents remain distinct from the spreadsheet.
+      evidenceLink(article, e.spreadsheet_row_url, `${e.record_id} · Abrir linha original`);
+      for (const [index, url] of e.source_urls.entries()) evidenceLink(details, url, `Abrir fonte documental ${index + 1}`);
+      for (const [key, value] of Object.entries(e.fields)) if (value) aiParagraph(details, `${key}: ${value}`);
+      article.append(details);
+    }
+    box.append(article);
+  }
+  return box;
+}
+
+async function analyzeBlock(id, refresh = false) {
+  const b = blocks.find(x => x.id === id);
+  if (!aiEnabled || !b || b.final === false || aiJobs.get(id)?.status === "PROCESSING") return;
+  const job = {status: "PROCESSING", inputText: b.text, inputSpeaker: NAMES[labels[id]] || ""};
+  aiJobs.set(id, job);
+  render();
+  try {
+    const submitted = await postAction("ai-evidence", {id, refresh});
+    job.job_id = submitted.job_id;
+  } catch (error) {
+    job.status = "ERROR"; job.error = error.message;
+    render(); return;
+  }
+  let failures = 0;
+  while (job.status === "PROCESSING") {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const response = await fetch(`/api/ai-evidence/${job.job_id}`, {cache: "no-store"});
+      if (!response.ok) throw new Error("Não foi possível consultar a análise.");
+      const snapshot = await response.json();
+      Object.assign(job, snapshot);
+      job.inputText = snapshot.input.transcription;
+      job.inputSpeaker = snapshot.input.speaker;
+      failures = 0;
+    } catch (error) {
+      if (++failures >= 5) { job.status = "ERROR"; job.error = `${error.message} Tente novamente.`; }
+    }
+  }
+  render();
 }
 
 function matches(b, q) {
@@ -437,7 +564,7 @@ function render() {
     const sig = JSON.stringify([b.status, b.text, b.error, label, b.final, b.speaker_hint, suggestion, b.edited, b.id === editingId,
       sent?.status, sent?.error, !!platform?.configured, platform?.target, settings, b.merged_edited, b.source_ids,
       isLocked(b.id), sendPending.has(b.id), sendUnconfirmed.has(b.id), labelPending.has(b.id), neighbour(b.id, 1)?.id, neighbour(b.id, 1)?.final,
-      isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id], checkability[b.id]]);
+      isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id], checkability[b.id], aiEnabled, aiJobs.get(b.id)]);
     const cur = rendered.get(b.id);
     if (!cur) {
       const el = buildBlock(b, label, suggestion);
@@ -527,6 +654,7 @@ async function refreshState() {
     checkability = data.checkability || {};
     platform = data.platform;
     extraDestinations = data.extra_destinations || [];
+    aiEnabled = !!data.ai_evidence?.enabled;
     if (!settingsPending) settings = data.settings || {};
     sessionStart = data.session_start;
     renderSettings();

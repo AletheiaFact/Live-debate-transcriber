@@ -6,6 +6,7 @@ const html = fs.readFileSync(`${__dirname}/static/index.html`, "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 function element() {
   return {children: [], dataset: {}, classList: {add() {}}, addEventListener() {},
+    setAttribute(name, value) {this[name] = value;},
     append(...children) {this.children.push(...children);}};
 }
 const context = vm.createContext({
@@ -78,6 +79,29 @@ async function main() {
   await stalePoll;
   assert.equal(run('blocks.length'), 2, "a stale poll must not erase the local send acknowledgement");
 
+  run(`
+    aiEnabled = true;
+    aiJobs.set("a", {status: "COMPLETED", inputText: "Claim", inputSpeaker: "Lula", result: {
+      status: "COMPLETED", errors: [], provider: "ollama", model: "test", analyzed_at: "now",
+      claims: [{quote: "Claim", normalized_claim: "Claim", retrieval_status: "MATCH_FOUND",
+        suggested_verdict: null, explanation: "Revisão humana", assigned_team: "L2", team_candidates: ["L2"], errors: [],
+        evidence: [{record_id: "LU106", sheet_name: "Lula", relevance: "DIRECT_MATCH", record_type: "Declaração",
+          team: "L2", existing_label: "Confiável", summary: "Registro relacionado", retrieved_at: "now", cache_status: "FRESH",
+          spreadsheet_row_url: "https://docs.google.com/spreadsheets/d/test/edit#gid=1277645709&range=A176:Y176",
+          source_urls: ["https://example.org/source"], fields: {ID: "LU106"}}]}]}});
+  `);
+  const evidenceBox = run('buildEvidence(blocks[0])');
+  const article = evidenceBox.children.find(x => x.children?.some(y => y.textContent === "“Claim”"));
+  const rowLink = article.children.find(x => x.textContent === "LU106 · Abrir linha original");
+  assert.equal(rowLink.href, "https://docs.google.com/spreadsheets/d/test/edit#gid=1277645709&range=A176:Y176");
+  assert.equal(rowLink.rel, "noopener noreferrer");
+  const details = article.children.find(x => x.children?.some(y => y.textContent === "Abrir fonte documental 1"));
+  assert.equal(details.children.find(x => x.textContent === "Abrir fonte documental 1").href, "https://example.org/source");
+  assert.equal(run('(() => {const el = document.createElement("div"); evidenceLink(el, "javascript:alert(1)", "unsafe"); return el.children.length;})()'), 0);
+  run('aiJobs.get("a").status = "PROCESSING"');
+  const processing = run('buildBlock(blocks[0], "1", "")');
+  assert.equal(processing.children[0].children.find(x => x.textContent === "Analisando…").disabled, true);
+
   run('sendByBlock.clear()');
   context.fetch = async () => {throw new Error("offline");};
   await run('sendBlock("a")');
@@ -93,6 +117,6 @@ async function main() {
   run('checkability = {}');
   assert.ok(!run('buildBlock(blocks[0], "1", "")').children[0].children.some(x => x?.className?.startsWith("chk")));
   console.log("UI checkability badge checks passed.");
-  console.log("UI timestamp, duplicate-click, sent-lock and retry checks passed.");
+  console.log("UI timestamp, send locks, retry, AI processing, row/source links and safe URL checks passed.");
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});
