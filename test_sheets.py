@@ -364,6 +364,34 @@ class ClientTests(unittest.TestCase):
             self.client.send(self.item)
         self.assertEqual(self.rows, [])
 
+    def test_current_and_legacy_header_names_allow_delivery(self):
+        for candidate in ("Candidato", "Etiqueta"):
+            for assessment in ("Avaliação da IA", "Avaiação da IA"):
+                with self.subTest(candidate=candidate, assessment=assessment):
+                    headers = list(HEADERS)
+                    headers[2], headers[5] = candidate, assessment
+                    self.client.api.values = lambda: SimpleNamespace(
+                        get=lambda **kw: Request(lambda: {"values": [headers]}))
+                    self.receipts.clear()
+                    self.rows.clear()
+                    self.client.send(self.item)
+                    self.assertEqual(len(self.rows), 1)
+
+    def test_moved_or_missing_columns_report_cell_and_prevent_delivery(self):
+        moved = list(HEADERS)
+        moved[2], moved[3] = moved[3], moved[2]
+        for headers, message in ((moved, "C6: esperado 'Candidato', encontrado 'Transcrição'"),
+                                 (HEADERS[:-1], "H6: esperado 'Colaborador', encontrado ''"),
+                                 ([], "A6: esperado 'Início', encontrado ''")):
+            with self.subTest(headers=headers):
+                self.client.api.values = lambda: SimpleNamespace(
+                    get=lambda **kw: Request(lambda: {"values": [headers] if headers else []}))
+                with self.assertRaises(ValueError) as error:
+                    self.client.send(self.item)
+                self.assertIn(message, str(error.exception))
+                self.assertEqual(self.rows, [])
+                self.assertEqual(self.receipts, {})
+
     def test_metadata_collision_does_not_mark_a_different_item_sent(self):
         self.client.send(self.item)
         with self.assertRaises(ValueError):

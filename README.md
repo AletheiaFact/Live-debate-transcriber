@@ -338,16 +338,19 @@ one row, starting at **row 7** when the template has no transcript data:
 |---|---|
 | A — Início | Elapsed start, `HH:MM:SS` |
 | B — Fim | Elapsed end, `HH:MM:SS` |
-| C — Etiqueta | Operator's speaker label: Lula or Flávio |
+| C — Candidato | Operator's speaker label: Lula or Flávio |
 | D — Transcrição | Final text, including operator corrections and merges |
 | E — Checabilidade | Jev checkability score, `0`–`100` (a number), or empty when no current score is ready |
-| F — Avaiação da IA | Formatted AI assessment: claims, suggested verdicts, selected record/source links and explanations; empty when explicitly sent without a usable analysis |
+| F — Avaliação da IA | Formatted AI assessment: claims, suggested verdicts, selected record/source links and explanations; empty when explicitly sent without a usable analysis |
 | G — Status | `Novo` |
 | H — Colaborador | Left for reviewers |
 
 Column E remains the numeric Jev score. To add the AI assessment column to the
-previous layout, insert a new column F and enter exactly `Avaiação da IA` in F6
-(the spelling used by the demo workbook). Status and Colaborador move to G and H.
+previous layout, insert a new column F and enter `Avaliação da IA` in F6.
+Status and Colaborador move to G and H. The legacy names `Etiqueta` in C6 and
+`Avaiação da IA` in F6 are also accepted. Columns A:H must stay in the documented
+order; additional review columns after H are allowed. A validation error identifies
+the mismatched cells and their expected and actual headers.
 `python sheets_client.py` confirms the headers without writing. Older queued rows
 are migrated in memory with an empty F; rows predating Checabilidade also get an empty E.
 

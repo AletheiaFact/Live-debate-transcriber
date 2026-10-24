@@ -13,7 +13,8 @@ from datetime import datetime
 from platform_client import load_dotenv, now_iso
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Checabilidade", "Avaiação da IA", "Status", "Colaborador"]
+HEADERS = ["Início", "Fim", "Candidato", "Transcrição", "Checabilidade", "Avaliação da IA", "Status", "Colaborador"]
+HEADER_ALIASES = {2: {"Etiqueta"}, 5: {"Avaiação da IA"}}
 HEADER_RANGE = "A6:H6"
 NAMES = {"1": "Lula", "2": "Flávio"}
 RECEIPT_KEY = "ldt"
@@ -103,8 +104,15 @@ class Client:
         quoted = "'" + self.cfg.tab.replace("'", "''") + "'"
         headers = api.values().get(spreadsheetId=self.cfg.spreadsheet_id,
                                    range=f"{quoted}!{HEADER_RANGE}").execute(num_retries=0).get("values", [])
-        if headers != [HEADERS]:
-            raise ValueError(f"os cabeçalhos {HEADER_RANGE} não correspondem ao modelo da transcrição")
+        actual = headers[0] if headers else []
+        mismatches = []
+        for index, expected in enumerate(HEADERS):
+            found = actual[index] if index < len(actual) else ""
+            if found not in {expected} | HEADER_ALIASES.get(index, set()):
+                mismatches.append(f"{chr(65 + index)}6: esperado {expected!r}, encontrado {found!r}")
+        if mismatches:
+            raise ValueError(f"os cabeçalhos {HEADER_RANGE} não correspondem ao modelo da transcrição: "
+                             + "; ".join(mismatches))
         return tab["sheetId"]
 
     def receipt(self, item):
