@@ -49,7 +49,7 @@ class QueueTests(unittest.TestCase):
 
     def test_elapsed_timestamps_midnight_and_column_mapping(self):
         row = transcript_row("1", [self.store.state()["blocks"][1]], self.store.operator["settings"])
-        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "", "", "Novo"])
+        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "", "", "", "Novo"])
         self.assertFalse(self.store.operator["settings"]["show_minutage"])
         with self.assertRaises(ValueError):
             transcript_row("1", [self.store.state()["blocks"][1]], {})
@@ -139,12 +139,37 @@ class QueueTests(unittest.TestCase):
         self.score("b", "=literal claim b", 72.4)
         self.assertEqual(self.send(["b"])[0], 200)
         row = list(self.outbox.items.values())[-1]["row"]
-        self.assertEqual(row[3:], ["=literal claim b", 72, "", "Novo"])
+        self.assertEqual(row[3:], ["=literal claim b", 72, "", "", "Novo"])
         for bid, text, model in [("a", "texto antigo", "jev-1.13.0"), ("c", "=literal claim c", "jev-mock")]:
             self.store.set_label(bid, "1")
             self.score(bid, text, 90.0, model)
             self.assertEqual(self.send([bid])[0], 200)
             self.assertEqual(list(self.outbox.items.values())[-1]["row"][4], "", f"{model} {text}")
+
+    def theme(self, bid, text, theme, model="jev-1.13.0"):
+        with open(self.store.themes_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"block_id": bid, "theme": theme, "method": "jev_direct", "model": model,
+                                "theme_rubric_version": 1, "state": {"target_block": text}}) + "\n")
+
+    def test_theme_goes_to_column_g_only_when_current_and_real(self):
+        self.theme("b", "=literal claim b", "Economia e finanças públicas")
+        self.assertEqual(self.send(["b"])[0], 200)
+        row = list(self.outbox.items.values())[-1]["row"]
+        self.assertEqual(row[3:], ["=literal claim b", "", "", "Economia e finanças públicas", "Novo"])
+        for bid, text, model in [("a", "texto antigo", "jev-1.13.0"), ("c", "=literal claim c", "jev-mock")]:
+            self.store.set_label(bid, "1")
+            self.theme(bid, text, "Sem tema", model)
+            self.assertEqual(self.send([bid])[0], 200)
+            self.assertEqual(list(self.outbox.items.values())[-1]["row"][6], "", f"{model} {text}")
+
+    def test_blocks_sent_together_get_a_theme_only_when_they_agree(self):
+        from server import sheet_theme
+        themes = {bid: {"theme": theme, "model": "jev-1.13.0", "stale": False}
+                  for bid, theme in [("a", "Sem tema"), ("b", "Sem tema"), ("c", "Democracia, Justiça e segurança")]}
+        blocks = [{"id": bid} for bid in "abc"]
+        self.assertEqual(sheet_theme(themes, blocks[:2]), "Sem tema")  # "Sem tema" is written, not left empty
+        self.assertEqual(sheet_theme(themes, blocks), "")
+        self.assertEqual(sheet_theme(themes, blocks[:2] + [{"id": "d"}]), "")
 
     def test_merge_snapshot_end_and_unmerge_lock(self):
         gid = self.store.merge_down("b")
@@ -180,7 +205,7 @@ class QueueTests(unittest.TestCase):
         item = next(iter(self.outbox.items.values()))
         self.assertEqual(item["ai_cell"], preview)
         self.assertEqual(response[1]["ai_cell"], preview)
-        self.assertEqual(item["row"][4:], [72, preview["userEnteredValue"]["stringValue"], "Novo"])
+        self.assertEqual(item["row"][4:], [72, preview["userEnteredValue"]["stringValue"], "", "Novo"])
         job["result"]["claims"][0]["explanation"] = "Later change"
         restored = Outbox(config(), self.temp.name, start_worker=False)
         self.assertEqual(next(iter(restored.items.values()))["ai_cell"], preview)
@@ -309,23 +334,24 @@ class ClientTests(unittest.TestCase):
         return Request(commit)
 
     def test_literal_values_no_extra_columns_and_idempotent_retry(self):
-        self.item["row"] = ["00:01:00", "00:01:07", "Lula", "=literal text", 72, "Novo"]
+        self.item["row"] = ["00:01:00", "00:01:07", "Lula", "=literal text", 72, "", "Sem tema", "Novo"]
         self.client.send(self.item)
         self.client.send(self.item)
         self.assertEqual(len(self.rows), 1)
         row = self.rows[0]
         self.assertEqual(row["fields"], "userEnteredValue")
         values = row["rows"][0]["values"]
-        self.assertEqual(len(values), 7)  # H (Colaborador) and later columns are untouched
+        self.assertEqual(len(values), 8)  # I (Colaborador) and later columns are untouched
         self.assertEqual(values[3], {"userEnteredValue": {"stringValue": "=literal text"}})
         self.assertEqual(values[4], {"userEnteredValue": {"numberValue": 72}})
         self.assertEqual(values[5], {"userEnteredValue": {"stringValue": ""}})
-        self.assertEqual(values[6], {"userEnteredValue": {"stringValue": "Novo"}})
+        self.assertEqual(values[6], {"userEnteredValue": {"stringValue": "Sem tema"}})
+        self.assertEqual(values[7], {"userEnteredValue": {"stringValue": "Novo"}})
 
-    def test_snapshot_queued_before_the_checkability_column_keeps_status_in_g(self):
+    def test_snapshot_queued_before_the_checkability_column_keeps_status_in_h(self):
         self.client.send(self.item)  # the old A:E row: ..., text, "Novo"
         values = [v["userEnteredValue"]["stringValue"] for v in self.rows[0]["rows"][0]["values"]]
-        self.assertEqual(values, ["00:01:00", "00:01:07", "Lula", "=literal text", "", "", "Novo"])
+        self.assertEqual(values, ["00:01:00", "00:01:07", "Lula", "=literal text", "", "", "", "Novo"])
 
     def test_ai_rich_text_is_appended_atomically_with_receipt(self):
         from ai_delivery import build_ai_cell
@@ -339,7 +365,16 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(len(self.rows), 1)
         self.assertEqual(self.rows[0]["rows"][0]["values"][5], preview)
         self.assertIn("textFormatRuns", self.rows[0]["fields"])
-        self.assertEqual(self.rows[0]["rows"][0]["values"][6]["userEnteredValue"]["stringValue"], "Novo")
+        # A row queued before the Tema column gets an empty G, so Status stays in H.
+        self.assertEqual([v["userEnteredValue"]["stringValue"] for v in self.rows[0]["rows"][0]["values"][6:]],
+                         ["", "Novo"])
+
+    def test_snapshot_queued_before_the_ai_column_keeps_status_in_h(self):
+        self.item["row"] = ["00:01:00", "00:01:07", "Lula", "=literal text", 72, "Novo"]  # the old A:F row
+        self.client.send(self.item)
+        values = self.rows[0]["rows"][0]["values"]
+        self.assertEqual(values[4:], [{"userEnteredValue": {"numberValue": 72}}, {"userEnteredValue": {"stringValue": ""}},
+                                      {"userEnteredValue": {"stringValue": ""}}, {"userEnteredValue": {"stringValue": "Novo"}}])
 
     def test_response_loss_recovers_without_second_append(self):
         self.lose_reply = True
