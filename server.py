@@ -347,6 +347,11 @@ class Handler(BaseHTTPRequestHandler):
             job = self.evidence.get(path.rsplit("/", 1)[-1])
             if job:
                 job.pop("audit", None)  # operator polling does not need the full audit payload
+                from ai_delivery import build_ai_cell, usable_job
+                source = job.get("input", {})
+                if usable_job(job, {"id": source.get("segment_id"), "text": source.get("transcription")},
+                              source.get("speaker")):
+                    job["delivery_preview"] = build_ai_cell([job["result"]])
             self._json(200 if job else 404, job or {"error": "análise desconhecida"})
         else:
             self.send_error(404)
@@ -489,10 +494,16 @@ class Handler(BaseHTTPRequestHandler):
         if missing:
             return self._json(400, {"error": "destino não configurado: " + ", ".join(missing)})
         try:
-            ids = json.loads(self.rfile.read(length))["blockIds"]
+            body = json.loads(self.rfile.read(length))
+            ids = body["blockIds"]
             if not isinstance(ids, list):
                 raise TypeError
             ids = [str(i) for i in ids]
+            ai_job_ids = body.get("aiJobIds", {})
+            if (not isinstance(ai_job_ids, dict) or any(k not in ids or not isinstance(v, str)
+                                                       for k, v in ai_job_ids.items())):
+                raise TypeError
+            without_ai = body.get("allowWithoutAI") is True
         except (ValueError, KeyError, TypeError):
             return self._json(400, {"error": "esperado {blockIds: [...]}"})
         # Snapshot validation and queue persistence share the edit lock, so an edit,
@@ -515,15 +526,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "o bloco não tem texto"})
             label = labels.pop()
             try:
+                from ai_delivery import build_ai_cell, usable_job
+                evidence = getattr(self, "evidence", None)
+                results, attached_ids = [], []
+                for block in blocks:
+                    job_id = ai_job_ids.get(block["id"])
+                    job = evidence.get(job_id) if evidence and job_id else None
+                    if usable_job(job, block, sheets_client.NAMES[label]):
+                        results.append(job["result"])
+                        attached_ids.append(job_id)
+                    elif evidence and evidence.cfg.enabled and not without_ai:
+                        return self._json(409, {"error": "Conclua ou atualize a análise, ou confirme o envio sem IA.",
+                                                "ai_required": True})
+                ai_cell = build_ai_cell(results) if results else None
                 # The primary goes first: if it rejects the block, nothing is queued anywhere.
                 settings = self.store.operator["settings"]
                 score = sheet_score(self.store.checkability(blocks), blocks)
-                item = enqueue(self.outbox, label, blocks, settings, score)
+                item = enqueue(self.outbox, label, blocks, settings, score, ai_cell, attached_ids)
                 for outbox in self.extra_outboxes:
-                    enqueue(outbox, label, blocks, settings, score)
+                    enqueue(outbox, label, blocks, settings, score, ai_cell, attached_ids)
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
-        self._json(200, {"externalId": item["externalId"], "status": item["status"]})
+        self._json(200, {"externalId": item["externalId"], "status": item["status"],
+                         "ai_cell": item.get("ai_cell")})
 
 
 def sheet_score(scores, blocks):
@@ -537,9 +562,9 @@ def sheet_score(scores, blocks):
     return round(max(s["percentage"] for s in found))
 
 
-def enqueue(outbox, label, blocks, settings, score=""):
+def enqueue(outbox, label, blocks, settings, score="", ai_cell=None, ai_job_ids=None):
     if isinstance(outbox, sheets_client.Outbox):
-        return outbox.enqueue(label, blocks, settings, score)
+        return outbox.enqueue(label, blocks, settings, score, ai_cell, ai_job_ids)
     # Platform ids are deterministic, so a resend of a queued or sent block is a no-op there.
     return outbox.enqueue(label, blocks, waiting=False)
 

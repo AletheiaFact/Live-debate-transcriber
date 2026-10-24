@@ -1,10 +1,12 @@
 # AI-assisted evidence retrieval
 
 The optional **Analisar com IA** button analyzes a finalized transcription block,
-including operator corrections and merges. Results appear below that block with
-quoted claims, applicability, a provisional verdict when justified, team routing,
-record IDs, **Abrir linha original**, and separate documentary-source links.
-An edited block or changed speaker displays a warning beside its older result.
+including operator corrections and merges. A collapsible panel below the block
+previews exactly the formatted assessment that **Enviar** sends to column F:
+quoted claims, provisional verdicts when justified, selected original-record and
+documentary-source links, and the AI explanation. Full applicability judgments,
+retrieval candidates and team routing remain in **Inspecionar análise completa**.
+An edited block or changed speaker makes its previous preview unavailable for export.
 **Atualizar base e reanalisar** explicitly refreshes the evidence cache.
 
 ## Setup
@@ -57,8 +59,13 @@ strict Python validation. Invalid JSON, refusals, truncated outputs, invented
 record references, and altered exact quotes are rejected. Ollama uses
 `reasoning_effort=none` for latency; configure
 `AI_EVIDENCE_OLLAMA_REASONING_EFFORT=` to omit the option for older servers.
-Generation defaults to temperature 0 for repeatability. Set
-`AI_EVIDENCE_TEMPERATURE=` to omit that parameter for models that do not support it.
+OpenAI requests use `max_completion_tokens`; Ollama requests use `max_tokens`.
+Generation defaults to temperature 0 for repeatability where supported. For
+OpenAI GPT-5 and later models (including `gpt-5.6-luna` and `gpt-6-luna`) and o-series reasoning
+models, the client automatically omits temperature to use the model's default.
+Set `AI_EVIDENCE_TEMPERATURE=` to omit it for other models that do not support it.
+Rejected parameters and HTTP failures appear as sanitized, specific errors in the
+operator panel and debug trace; provider messages and credentials are never copied.
 The remote Ollama server must listen on its LAN interface and its firewall must
 allow the client. Keep that unauthenticated API off the public internet.
 
@@ -114,8 +121,22 @@ Assessment uses the workbook's summaries and source attributions; the operator
 must open documentary sources. `INSUFICIENTE` remains in the protocol/schema but
 is withheld in v1 because this service does not conduct a documented investigation
 of all pertinent sources. No database match is `NO_MATCH` with a null verdict,
-never a factual finding. All results remain `PENDING_HUMAN_REVIEW`. Analysis never
-approves, publishes, sends, or changes the live-control tab or any evidence row.
+never a factual finding. All results remain `PENDING_HUMAN_REVIEW`. Running analysis
+does not change either workbook. An explicit **Enviar** sends its assessment to
+the transcript destination; the evidence workbook remains read-only.
+
+The delivery summary selects at most three reliable direct/partial records per
+claim, preferring compatible context. Incompatible records appear only when no
+compatible record is available, with an explicit warning. Each record includes
+its row link and up to two documentary links, with primary-source links first.
+The existing verdict gates are unchanged. The panel and export share `ai_delivery.py`,
+including UTF-16 rich-text offsets and explicit truncation below the cell limit.
+
+With AI enabled, sending a missing, running, failed, partial or outdated analysis
+requires confirmation to send without AI. The default alternatives are cancelling
+or refreshing the analysis first. **Permitir envio sem IA** skips repeated prompts
+until page reload; it never suppresses a completed current assessment. No prompt
+is shown when AI is disabled. Queued assessments are immutable snapshots.
 
 Record IDs plus sheet IDs are durable identities. URLs are constructed by Python
 from current snapshot row positions, using A:Y for tracking and A:S for the other
@@ -140,6 +161,8 @@ The localhost HTTP server exposes:
   direct callers may supply their own segment-relative seconds.
 - A `202` response supplies `job_id` and `PROCESSING`.
 - `GET /api/ai-evidence/{job_id}` returns status, input snapshot, result and error.
+  A completed usable result also includes `delivery_preview` with the literal
+  `userEnteredValue`, `textFormatRuns`, and wrapping used for column F.
   The API retains the latest 50 jobs in memory and reads older jobs from disk.
   Jobs and audit events are saved locally in `data/<session>/ai_evidence/`.
   Restarted runs that did not finish appear as interrupted in the debug viewer.
@@ -147,6 +170,12 @@ The localhost HTTP server exposes:
   at **Inspecionar IA** (`/debug`). See [the audit dashboard](ai_debug.md) for live
   steps, exact model payloads, verdict rules, comparison and JSON exports.
 - `GET /api/state` includes `ai_evidence.enabled` for the button state.
+- `POST /api/send` accepts `blockIds`, an optional `aiJobIds` mapping from block ID
+  to saved job ID, and `allowWithoutAI: true` for an explicit bypass. With AI enabled,
+  every selected block must have a completed matching job unless bypassed; otherwise
+  the server returns HTTP 409 and queues nothing. Supplied jobs are checked against
+  the current block ID, text and speaker; client-supplied assessment text is never used.
+  The summary and its formatting are persisted with the delivery receipt job.
 
 `AnalysisResult` contains segment ID/speaker, original transcription, status
 COMPLETED/PARTIAL/ERROR, provider/model, analysis timestamp, errors, and claims.

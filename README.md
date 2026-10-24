@@ -298,8 +298,9 @@ one by default, or the block you clicked or moved to with ↑/↓.
 ## Sending blocks to Google Sheets
 
 Optional **Analisar com IA** retrieves evidence from a separate, read-only
-four-tab workbook and displays provisional findings and original row/source links
-without sending or publishing them. See [AI evidence setup and API](docs/ai_evidence.md)
+four-tab workbook. Its collapsible panel previews the formatted assessment that
+**Enviar** includes in column F. Full details remain in **Inspecionar IA**.
+See [AI evidence setup and API](docs/ai_evidence.md)
 for Ollama/OpenAI configuration, validation safeguards, and tests.
 
 Use **Inspecionar IA** in the toolbar (http://127.0.0.1:8765/debug) to inspect
@@ -330,7 +331,7 @@ Run this read-only check before starting `server.py`:
 python sheets_client.py
 ```
 
-The tab must have the following headers in **A6:G6**. Each selected block becomes
+The tab must have the following headers in **A6:H6**. Each selected block becomes
 one row, starting at **row 7** when the template has no transcript data:
 
 | Column | Value sent |
@@ -340,13 +341,32 @@ one row, starting at **row 7** when the template has no transcript data:
 | C — Etiqueta | Operator's speaker label: Lula or Flávio |
 | D — Transcrição | Final text, including operator corrections and merges |
 | E — Checabilidade | Jev checkability score, `0`–`100` (a number), or empty when no current score is ready |
-| F — Status | `Novo` |
-| G — Colaborador | Left for reviewers |
+| F — Avaiação da IA | Formatted AI assessment: claims, suggested verdicts, selected record/source links and explanations; empty when explicitly sent without a usable analysis |
+| G — Status | `Novo` |
+| H — Colaborador | Left for reviewers |
 
-To add the Checabilidade column to an existing tab, right-click column E,
-choose **Insert 1 column left**, and type `Checabilidade` in E6. Existing rows,
-statuses and dropdowns move to F and G. `python sheets_client.py` confirms the
-headers. Rows queued before the update are sent with an empty E.
+Column E remains the numeric Jev score. To add the AI assessment column to the
+previous layout, insert a new column F and enter exactly `Avaiação da IA` in F6
+(the spelling used by the demo workbook). Status and Colaborador move to G and H.
+`python sheets_client.py` confirms the headers without writing. Older queued rows
+are migrated in memory with an empty F; rows predating Checabilidade also get an empty E.
+
+The collapsed **Avaliação da IA** panel shows the same text, bold labels and
+clickable links as column F. It selects up to three reliable direct/partial
+matches per claim, preferring compatible context. Only when none are compatible
+does it include incompatible matches, explicitly marked as references. Each record
+has its original-row link and up to two documentary-source links. Full retrieval
+details stay in Debug. Very long summaries are visibly truncated below Sheets'
+cell limit, identically in the preview and export.
+
+With AI enabled, **Enviar** prompts when analysis is missing, unfinished, failed
+or outdated. Choose **Cancelar**, **Analisar primeiro** (refreshes the analysis),
+or **Enviar sem IA** (empty F). **Analisar primeiro** is disabled while inference
+is running. The toolbar checkbox **Permitir envio sem IA** suppresses these prompts
+and shows a reminder; it resets on reload. Completed results matching the current
+text and speaker are included even with this option enabled. Partial results are
+not exported. With AI disabled there is no prompt. The server validates saved
+jobs, and the queued assessment remains immutable through retries and restarts.
 
 The score is the one shown on the block when you press **Enviar**. It is left
 empty if `checkability.py` has not scored the block yet, if the text changed
@@ -363,7 +383,8 @@ immediately disables the button and locks text, labels, merge/unmerge, and movin
 text into or out of that block. A successful send shows **enviado à planilha**.
 The lock survives refreshes and server restarts. Make later corrections directly
 in Sheets: the app never updates or resends a successfully delivered snapshot.
-Copying and navigation remain available.
+Copying and navigation remain available. Once queued, the AI panel displays the
+frozen assessment for that delivery and cannot be reanalyzed from that block.
 
 The persistent queue is `data/<session>/sheets_outbox.jsonl`. A confirmed failure
 shows its error on the badge, unlocks the block and enables **Tentar novamente**.

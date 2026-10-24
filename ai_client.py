@@ -1,6 +1,7 @@
 """Ollama and OpenAI through one SDK, without tools or spreadsheet access."""
 import json
 import os
+import re
 
 import audit_trace as audit
 
@@ -59,14 +60,22 @@ class Client:
                 "name": schema.__name__, "strict": True, "schema": contract}}
         try:
             options = {}
-            if self.cfg.temperature is not None:
+            # Reasoning models reject custom sampling settings. Keep the model's
+            # default, even when the shared configuration requests temperature 0.
+            family = re.match(r"^gpt-(\d+)(?:[.-]|$)", self.cfg.model)
+            reasoning_model = self.cfg.provider == "openai" and (
+                (family is not None and int(family[1]) >= 5)
+                or re.match(r"^o\d+(?:-|$)", self.cfg.model) is not None)
+            if self.cfg.temperature is not None and not reasoning_model:
                 options["temperature"] = self.cfg.temperature
+            token_limit = "max_completion_tokens" if self.cfg.provider == "openai" else "max_tokens"
+            options[token_limit] = 6000
             if self.cfg.provider == "ollama" and self.cfg.ollama_reasoning_effort:
                 options["reasoning_effort"] = self.cfg.ollama_reasoning_effort
             request = dict(model=self.cfg.model,
                            messages=[{"role": "system", "content": system + "\nResponda apenas JSON conforme o schema: " + json.dumps(contract)},
                                      {"role": "user", "content": json.dumps(data, ensure_ascii=False)}],
-                           response_format=fmt, max_tokens=6000, **options)
+                           response_format=fmt, **options)
             audit.emit("model_request", request=request, prompt_sha256=audit.digest(request["messages"]),
                        schema_sha256=audit.digest(contract))
             response = self.connect().chat.completions.create(**request)
@@ -106,4 +115,24 @@ class Client:
                 raise AIError("JSON de IA inválido para o schema") from exc
             if type(exc).__name__ == "APITimeoutError":
                 raise AIError("tempo limite de inferência atingido; verifique a carga do servidor ou aumente AI_EVIDENCE_TIMEOUT_SECONDS") from exc
+            status = getattr(exc, "status_code", None)
+            if status == 401:
+                raise AIError("chave de IA rejeitada pelo provedor (HTTP 401); verifique OPENAI_API_KEY") from exc
+            if status == 403:
+                raise AIError("acesso ao provedor de IA negado (HTTP 403); verifique as permissões da chave") from exc
+            if status == 400:
+                # Only known parameter names/codes may reach the audit. Never
+                # include provider messages, which can echo keys or input data.
+                parameter = getattr(exc, "param", None)
+                code = getattr(exc, "code", None)
+                if code in ("unsupported_parameter", "unsupported_value") and parameter in (
+                        "max_tokens", "max_completion_tokens", "temperature", "reasoning_effort", "response_format"):
+                    raise AIError(f"parâmetro de IA não aceito pelo modelo (HTTP 400): {parameter}; verifique a compatibilidade do modelo e a configuração") from exc
+                if code == "invalid_json_schema":
+                    raise AIError("schema JSON rejeitado pelo provedor de IA (HTTP 400); verifique a compatibilidade do modelo e AI_EVIDENCE_JSON_MODE") from exc
+                raise AIError("requisição de IA rejeitada (HTTP 400); verifique os parâmetros e a compatibilidade do modelo") from exc
+            if status == 429:
+                raise AIError("limite de uso ou cota de IA atingido (HTTP 429); verifique a cota e tente novamente mais tarde") from exc
+            if type(status) is int and 500 <= status <= 599:
+                raise AIError(f"falha no servidor de IA (HTTP {status}); verifique o provedor e tente novamente") from exc
             raise AIError("falha na inferência; verifique conexão, modelo e AI_EVIDENCE_JSON_MODE") from exc

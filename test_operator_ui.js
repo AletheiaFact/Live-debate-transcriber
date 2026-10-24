@@ -4,13 +4,31 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const html = fs.readFileSync(`${__dirname}/static/index.html`, "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-function element() {
-  return {children: [], dataset: {}, classList: {add() {}}, addEventListener() {},
+function element(tag = "div") {
+  const listeners = new Map();
+  return {tagName: tag.toUpperCase(), children: [], dataset: {}, classList: {add() {}},
+    addEventListener(type, listener, options) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push({listener, once: options?.once});
+    },
+    dispatch(type, event = {}) {
+      const handlers = listeners.get(type) || [];
+      listeners.set(type, handlers.filter(x => !x.once));
+      for (const x of handlers) x.listener(event);
+    },
+    showModal() {this.open = true;},
+    close(value) {this.open = false; this.returnValue = value; this.dispatch("close");},
     setAttribute(name, value) {this[name] = value;},
     append(...children) {this.children.push(...children);}};
 }
+const elements = new Map();
+const select = selector => {
+  if (!elements.has(selector)) elements.set(selector, element());
+  return elements.get(selector);
+};
+const textOf = el => typeof el === "string" ? el : (el.textContent || "") + el.children.map(textOf).join("");
 const context = vm.createContext({
-  document: {querySelector: () => ({addEventListener() {}}), addEventListener() {},
+  document: {querySelector: select, addEventListener() {},
     createElement: element, createDocumentFragment: element},
   window: {addEventListener() {}},
 });
@@ -81,28 +99,41 @@ async function main() {
 
   run(`
     aiEnabled = true;
-    aiJobs.set("a", {status: "COMPLETED", inputText: "Claim", inputSpeaker: "Lula", result: {
+    aiJobs.set("a", {job_id: "abc", status: "COMPLETED", inputText: "Claim", inputSpeaker: "Lula", result: {
       status: "COMPLETED", errors: [], provider: "ollama", model: "test", analyzed_at: "now",
       claims: [{quote: "Claim", normalized_claim: "Claim", retrieval_status: "MATCH_FOUND",
         suggested_verdict: null, explanation: "Revisão humana", assigned_team: "L2", team_candidates: ["L2"], errors: [],
         evidence: [{record_id: "LU106", sheet_name: "Lula", relevance: "DIRECT_MATCH", record_type: "Declaração",
           team: "L2", existing_label: "Confiável", summary: "Registro relacionado", retrieved_at: "now", cache_status: "FRESH",
           spreadsheet_row_url: "https://docs.google.com/spreadsheets/d/test/edit#gid=1277645709&range=A176:Y176",
-          source_urls: ["https://example.org/source"], fields: {ID: "LU106"}}]}]}});
+          source_urls: ["https://example.org/source"], fields: {ID: "LU106"}}]}]},
+      delivery_preview: {userEnteredValue: {stringValue: "Frase: Claim\\nAbrir registro original"}, textFormatRuns: [
+        {startIndex: 0, format: {bold: true}}, {startIndex: 7, format: {}},
+        {startIndex: 13, format: {link: {uri: "https://example.org/row"}}}]}});
   `);
   const evidenceBox = run('buildEvidence(blocks[0])');
-  const article = evidenceBox.children.find(x => x.children?.some(y => y.textContent === "“Claim”"));
-  const rowLink = article.children.find(x => x.textContent === "LU106 · Abrir linha original");
-  assert.equal(rowLink.href, "https://docs.google.com/spreadsheets/d/test/edit#gid=1277645709&range=A176:Y176");
+  assert.equal(evidenceBox.tagName, "DETAILS");
+  assert.equal(evidenceBox.open, false);
+  evidenceBox.open = true;
+  evidenceBox.dispatch("toggle");
+  assert.equal(run('buildEvidence(blocks[0]).open'), true, "poll-driven rebuilds preserve expanded state");
+  const preview = evidenceBox.children.find(x => x.className === "ai-preview");
+  assert.equal(textOf(preview), run('aiJobs.get("a").delivery_preview.userEnteredValue.stringValue'));
+  assert.equal(preview.children[0].tagName, "STRONG");
+  const rowLink = preview.children.find(x => x.tagName === "A");
+  assert.equal(rowLink.href, "https://example.org/row");
   assert.equal(rowLink.rel, "noopener noreferrer");
-  const details = article.children.find(x => x.children?.some(y => y.textContent === "Abrir fonte documental 1"));
-  assert.equal(details.children.find(x => x.textContent === "Abrir fonte documental 1").href, "https://example.org/source");
+  assert.ok(!textOf(evidenceBox).includes("Confiável"), "full raw evidence stays in Debug");
   assert.equal(run('(() => {const el = document.createElement("div"); evidenceLink(el, "javascript:alert(1)", "unsafe"); return el.children.length;})()'), 0);
+  run('aiJobs.get("a").inputText = "old"');
+  assert.ok(!run('buildEvidence(blocks[0])').children.some(x => x.className === "ai-preview"), "outdated content must never look ready to send");
+  run('aiJobs.get("a").inputText = "Claim"');
   run('aiJobs.get("a").status = "PROCESSING"');
   const processing = run('buildBlock(blocks[0], "1", "")');
   assert.equal(processing.children[0].children.find(x => x.textContent === "Analisando…").disabled, true);
 
   run('sendByBlock.clear()');
+  run('aiEnabled = false');
   context.fetch = async () => {throw new Error("offline");};
   await run('sendBlock("a")');
   assert.equal(run('sendUnconfirmed.has("a")'), true);
@@ -117,6 +148,67 @@ async function main() {
   run('checkability = {}');
   assert.ok(!run('buildBlock(blocks[0], "1", "")').children[0].children.some(x => x?.className?.startsWith("chk")));
   console.log("UI checkability badge checks passed.");
+  await aiSendChecks();
   console.log("UI timestamp, send locks, retry, AI processing, row/source links and safe URL checks passed.");
+}
+
+async function aiSendChecks() {
+  run('sendByBlock.clear(); sendUnconfirmed.clear(); aiJobs.clear(); aiEnabled = true; allowWithoutAI = false;');
+  let calls = [];
+  context.fetch = async (url, options) => {
+    calls.push(JSON.parse(options.body));
+    return {ok: true, json: async () => ({status: "queued", ai_cell: null})};
+  };
+  let sending = run('sendBlock("a")');
+  assert.equal(select("#aiSendConfirm").open, true);
+  assert.equal(calls.length, 0);
+  await run('sendBlock("a")');
+  select("#aiSendConfirm").close("cancel");
+  await sending;
+  assert.equal(calls.length, 0, "cancel and a duplicate send must not post");
+
+  sending = run('sendBlock("a")');
+  select("#aiSendConfirm").close("send");
+  await sending;
+  assert.equal(calls[0].allowWithoutAI, true);
+  assert.deepEqual(calls[0].aiJobIds, {});
+
+  run('sendByBlock.clear(); allowWithoutAI = true; aiJobs.set("a", {job_id: "running", status: "PROCESSING"});');
+  await run('sendBlock("a")');
+  assert.equal(calls[1].allowWithoutAI, true);
+  assert.equal(calls[1].aiJobIds.a, "running", "server can include a job that finishes before enqueue");
+  assert.equal(select("#aiSendConfirm").open, false, "the bypass checkbox suppresses repeated prompts");
+
+  run(`sendByBlock.clear(); allowWithoutAI = false; aiJobs.set("a", {
+    job_id: "ready", status: "COMPLETED", inputText: "Claim", inputSpeaker: "Lula",
+    delivery_preview: {userEnteredValue: {stringValue: "Same summary"}, textFormatRuns: [{startIndex: 0, format: {bold: true}}]}
+  });`);
+  context.fetch = async (url, options) => {
+    calls.push(JSON.parse(options.body));
+    return {ok: true, json: async () => ({status: "queued", ai_cell: run('aiJobs.get("a").delivery_preview')})};
+  };
+  await run('sendBlock("a")');
+  assert.equal(calls[2].aiJobIds.a, "ready");
+  assert.equal(calls[2].allowWithoutAI, false);
+  assert.equal(select("#aiSendConfirm").open, false, "usable results send without prompting");
+  run('aiJobs.get("a").delivery_preview.userEnteredValue.stringValue = "New inference"');
+  // Real HTTP responses are JSON copies; use a separate saved cell for this assertion.
+  run('sendByBlock.get("a").ai_cell = {userEnteredValue: {stringValue: "Frozen summary"}, textFormatRuns: [{startIndex: 0, format: {}}]}');
+  assert.ok(textOf(run('buildEvidence(blocks[0])')).includes("Frozen summary"));
+  assert.ok(!textOf(run('buildEvidence(blocks[0])')).includes("New inference"));
+
+  run('sendByBlock.clear(); aiJobs.get("a").status = "ERROR";');
+  let analyzed = null;
+  context.captureAnalyze = (id, refresh) => {analyzed = {id, refresh};};
+  run('analyzeBlock = (id, refresh) => captureAnalyze(id, refresh)');
+  sending = run('sendBlock("a")');
+  select("#aiSendConfirm").close("analyze");
+  await sending;
+  assert.deepEqual(analyzed, {id: "a", refresh: true});
+  assert.equal(calls.length, 3, "Analyze first must not send the block");
+  select("#allowWithoutAI").dispatch("change", {target: {checked: true}});
+  assert.equal(run('allowWithoutAI'), true);
+  assert.equal(select("#aiBypassWarning").hidden, false);
+  console.log("AI preview parity, collapse state, confirmation, bypass and frozen snapshot checks passed.");
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

@@ -1,5 +1,6 @@
 """Delivery, immutable snapshots and operator API regression tests; no network writes."""
 import importlib.util
+import copy
 import io
 import json
 import os
@@ -37,17 +38,18 @@ class QueueTests(unittest.TestCase):
         self.outbox = Outbox(config(), self.temp.name, client=self.client, start_worker=False)
         self.store.send_locked = self.outbox.locked
 
-    def send(self, ids):
-        body = json.dumps({"blockIds": ids}).encode()
+    def send(self, ids, **options):
+        body = json.dumps({"blockIds": ids, **options}).encode()
         responses = []
         handler = SimpleNamespace(store=self.store, outbox=self.outbox, extra_outboxes=getattr(self, "extra", []),
+                                  evidence=getattr(self, "evidence", None),
                                   rfile=io.BytesIO(body), _json=lambda code, data: responses.append((code, data)))
         Handler._send_speech(handler, len(body))
         return responses[0]
 
     def test_elapsed_timestamps_midnight_and_column_mapping(self):
         row = transcript_row("1", [self.store.state()["blocks"][1]], self.store.operator["settings"])
-        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "", "Novo"])
+        self.assertEqual(row, ["00:31:00", "00:31:07", "Lula", "=literal claim b", "", "", "Novo"])
         self.assertFalse(self.store.operator["settings"]["show_minutage"])
         with self.assertRaises(ValueError):
             transcript_row("1", [self.store.state()["blocks"][1]], {})
@@ -137,7 +139,7 @@ class QueueTests(unittest.TestCase):
         self.score("b", "=literal claim b", 72.4)
         self.assertEqual(self.send(["b"])[0], 200)
         row = list(self.outbox.items.values())[-1]["row"]
-        self.assertEqual(row[3:], ["=literal claim b", 72, "Novo"])
+        self.assertEqual(row[3:], ["=literal claim b", 72, "", "Novo"])
         for bid, text, model in [("a", "texto antigo", "jev-1.13.0"), ("c", "=literal claim c", "jev-mock")]:
             self.store.set_label(bid, "1")
             self.score(bid, text, 90.0, model)
@@ -152,6 +154,66 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(row[3], "=literal claim b =literal claim c")
         with self.assertRaises(ValueError):
             self.store.unmerge(gid, confirmed=True)
+
+    def ai_job(self):
+        source = {"segment_id": "b", "transcription": "=literal claim b", "speaker": "Lula"}
+        result = {**source, "status": "COMPLETED", "errors": [], "claims": [
+            {"quote": "=literal claim b", "suggested_verdict": "FALSO", "explanation": "Explicação da IA.",
+             "errors": [], "evidence": [{"evidence_key": "key", "record_id": "LU1", "sheet_name": "Lula",
+                 "relevance": "DIRECT_MATCH", "source_quality": "RELIABLE", "context_compatible": True,
+                 "spreadsheet_row_url": "https://example.org/row", "source_urls": ["https://example.org/source"]}]}]}
+        job = {"job_id": "a" * 32, "status": "COMPLETED", "input": source, "result": result}
+        self.evidence = SimpleNamespace(cfg=SimpleNamespace(enabled=True),
+                                        get=lambda job_id: copy.deepcopy(job) if job_id == job["job_id"] else None)
+        return job
+
+    def test_ai_preview_equals_frozen_column_f_and_survives_restart(self):
+        job = self.ai_job()
+        responses = []
+        handler = SimpleNamespace(path="/api/ai-evidence/" + job["job_id"], evidence=self.evidence,
+                                  _host_ok=lambda: True, _json=lambda code, data: responses.append((code, data)))
+        Handler.do_GET(handler)
+        preview = responses[0][1]["delivery_preview"]
+        self.score("b", "=literal claim b", 72.4)
+        response = self.send(["b"], aiJobIds={"b": job["job_id"]})
+        self.assertEqual(response[0], 200)
+        item = next(iter(self.outbox.items.values()))
+        self.assertEqual(item["ai_cell"], preview)
+        self.assertEqual(response[1]["ai_cell"], preview)
+        self.assertEqual(item["row"][4:], [72, preview["userEnteredValue"]["stringValue"], "Novo"])
+        job["result"]["claims"][0]["explanation"] = "Later change"
+        restored = Outbox(config(), self.temp.name, start_worker=False)
+        self.assertEqual(next(iter(restored.items.values()))["ai_cell"], preview)
+
+    def test_missing_or_unusable_analysis_requires_explicit_bypass(self):
+        for scenario in ("missing", "PROCESSING", "ERROR", "PARTIAL", "text", "speaker", "segment"):
+            with self.subTest(scenario=scenario):
+                job = self.ai_job()
+                if scenario in {"PROCESSING", "ERROR", "PARTIAL"}:
+                    job["status"] = scenario
+                elif scenario in {"text", "speaker", "segment"}:
+                    job["input"][{"text": "transcription", "speaker": "speaker", "segment": "segment_id"}[scenario]] = "changed"
+                refs = {} if scenario == "missing" else {"b": job["job_id"]}
+                self.assertEqual(self.send(["b"], aiJobIds=refs)[0], 409)
+                self.assertEqual(self.outbox.items, {})
+        self.assertEqual(self.send(["b"], aiJobIds=refs, allowWithoutAI=True)[0], 200)
+        item = next(iter(self.outbox.items.values()))
+        self.assertEqual(item["row"][5], "")
+        self.assertIsNone(item["ai_cell"])
+
+    def test_bypass_still_includes_a_completed_current_analysis(self):
+        job = self.ai_job()
+        self.assertEqual(self.send(["b"], aiJobIds={"b": job["job_id"]}, allowWithoutAI=True)[0], 200)
+        self.assertIn("Explicação da IA.", next(iter(self.outbox.items.values()))["row"][5])
+
+    def test_ai_failure_blocks_both_destinations_before_any_enqueue(self):
+        job = self.ai_job()
+        job["status"] = "ERROR"
+        sent = []
+        self.extra = [SimpleNamespace(cfg=SimpleNamespace(missing=lambda: []),
+                                      enqueue=lambda *args, **kwargs: sent.append(args))]
+        self.assertEqual(self.send(["b"], aiJobIds={"b": job["job_id"]})[0], 409)
+        self.assertEqual((sent, self.outbox.items), ([], {}))
 
     def test_torn_last_record_does_not_corrupt_next_write(self):
         with open(self.outbox.path, "wb") as f:
@@ -254,15 +316,30 @@ class ClientTests(unittest.TestCase):
         row = self.rows[0]
         self.assertEqual(row["fields"], "userEnteredValue")
         values = row["rows"][0]["values"]
-        self.assertEqual(len(values), 6)  # G (Colaborador) and later columns are untouched
+        self.assertEqual(len(values), 7)  # H (Colaborador) and later columns are untouched
         self.assertEqual(values[3], {"userEnteredValue": {"stringValue": "=literal text"}})
         self.assertEqual(values[4], {"userEnteredValue": {"numberValue": 72}})
-        self.assertEqual(values[5], {"userEnteredValue": {"stringValue": "Novo"}})
+        self.assertEqual(values[5], {"userEnteredValue": {"stringValue": ""}})
+        self.assertEqual(values[6], {"userEnteredValue": {"stringValue": "Novo"}})
 
-    def test_snapshot_queued_before_the_checkability_column_keeps_status_in_f(self):
+    def test_snapshot_queued_before_the_checkability_column_keeps_status_in_g(self):
         self.client.send(self.item)  # the old A:E row: ..., text, "Novo"
         values = [v["userEnteredValue"]["stringValue"] for v in self.rows[0]["rows"][0]["values"]]
-        self.assertEqual(values, ["00:01:00", "00:01:07", "Lula", "=literal text", "", "Novo"])
+        self.assertEqual(values, ["00:01:00", "00:01:07", "Lula", "=literal text", "", "", "Novo"])
+
+    def test_ai_rich_text_is_appended_atomically_with_receipt(self):
+        from ai_delivery import build_ai_cell
+        preview = build_ai_cell([{"claims": [{"quote": "Uma frase", "explanation": "Uma resposta", "evidence": []}]}])
+        self.item.update(row=["00:01:00", "00:01:07", "Lula", "=literal text", 72,
+                              preview["userEnteredValue"]["stringValue"], "Novo"], ai_cell=preview)
+        self.lose_reply = True
+        with self.assertRaises(DeliveryUnknown):
+            self.client.send(self.item)
+        self.client.send(self.item)
+        self.assertEqual(len(self.rows), 1)
+        self.assertEqual(self.rows[0]["rows"][0]["values"][5], preview)
+        self.assertIn("textFormatRuns", self.rows[0]["fields"])
+        self.assertEqual(self.rows[0]["rows"][0]["values"][6]["userEnteredValue"]["stringValue"], "Novo")
 
     def test_response_loss_recovers_without_second_append(self):
         self.lose_reply = True

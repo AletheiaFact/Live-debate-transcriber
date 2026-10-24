@@ -90,6 +90,15 @@
   .ai-results article { margin-top: .6rem; padding: .5rem; background: var(--bg); border-radius: 5px; }
   .ai-results a { display: inline-block; margin: .2rem .8rem .2rem 0; color: var(--flavio); }
   .ai-results summary { cursor: pointer; }
+  .ai-results > summary { font-weight: 600; }
+  .ai-preview { margin: .5rem 0; white-space: pre-wrap; }
+  .ai-preview a { display: inline; margin: 0; }
+  #aiControls { padding: .4rem 1rem; font-size: .8rem; border-top: 1px solid var(--line); }
+  #aiBypassWarning { margin-left: .7rem; color: var(--alarm); font-weight: 600; }
+  dialog { max-width: 31rem; padding: 1.2rem; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--panel); }
+  dialog::backdrop { background: #0006; }
+  dialog h2 { margin: 0; font-size: 1.1rem; }
+  dialog .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
   #jump { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%); display: none;
           font-size: .9rem; padding: .5rem 1.1rem; background: var(--ink); color: #fff; border: 0; border-radius: 999px;
           box-shadow: 0 2px 8px rgba(0,0,0,.25); }
@@ -122,11 +131,27 @@
     <label>Data <input id="debateDate" type="date"></label>
     <label><input id="showMinutage" type="checkbox"> Mostrar minutagem</label>
   </div>
+  <div id="aiControls" hidden>
+    <label><input id="allowWithoutAI" type="checkbox" autocomplete="off"> Permitir envio sem IA</label>
+    <span id="aiBypassWarning" hidden>Envios sem análise disponível serão feitos com a coluna F vazia.</span>
+  </div>
 </header>
 <main id="blocks"><div class="empty" id="empty">Nenhum bloco ainda. Aguardando o gravador…</div></main>
 <button id="jump">Ir para o mais recente ↓</button>
 
 <div id="toast"></div>
+<dialog id="aiSendConfirm" aria-labelledby="aiSendTitle" aria-describedby="aiSendReason">
+  <form method="dialog">
+    <h2 id="aiSendTitle">Enviar sem avaliação da IA?</h2>
+    <p id="aiSendReason"></p>
+    <p>A coluna F ficará vazia. Se a análise terminar antes do envio, o resultado atualizado será incluído.</p>
+    <div class="actions">
+      <button value="cancel" autofocus>Cancelar</button>
+      <button id="aiConfirmAnalyze" value="analyze">Analisar primeiro</button>
+      <button value="send">Enviar sem IA</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 "use strict";
@@ -158,6 +183,9 @@ const labelPending = new Set();
 let editingId = null;         // block open in the text editor
 let aiEnabled = false;
 const aiJobs = new Map(); // per-block immutable input snapshots and analysis results
+const aiExpanded = new Map();
+let allowWithoutAI = false; // deliberately resets on reload
+let aiConfirmOpen = false;
 const SEND_TEXT = { waiting: "envia quando finalizar", queued: "na fila", sending: "enviando…", verifying: "verificando envio…", error: "tentando de novo", auth: "precisa de login", sent: "enviado", skipped: "já estava lá", failed: "falha no envio" };
 const WS_TEXT = { starting: "iniciando", connecting: "conectando", connected: "conectado", reconnecting: "reconectando",
   rotating: "renovando sessão", finishing: "finalizando", closed: "encerrado" };
@@ -403,14 +431,14 @@ function buildBlock(b, label, suggestion) {
     if (b.final !== false && b.status === "ok") {
       const analyze = document.createElement("button");
       analyze.textContent = aiJobs.get(b.id)?.status === "PROCESSING" ? "Analisando…" : "Analisar com IA";
-      analyze.disabled = !aiEnabled || aiJobs.get(b.id)?.status === "PROCESSING";
+      analyze.disabled = !aiEnabled || aiJobs.get(b.id)?.status === "PROCESSING" || (isSheets() && isLocked(b.id));
       analyze.title = aiEnabled ? "Buscar evidências para revisão humana" : "Habilite AI_EVIDENCE_ENABLED em .env e reinicie o servidor";
       analyze.addEventListener("click", ev => { ev.stopPropagation(); analyzeBlock(b.id); });
       meta.append(analyze);
     }
   }
   el.append(meta, text);
-  if (aiJobs.has(b.id)) el.append(buildEvidence(b));
+  if (aiJobs.has(b.id) || sendByBlock.get(b.id)?.ai_cell) el.append(buildEvidence(b));
   return el;
 }
 
@@ -445,67 +473,87 @@ function evidenceLink(parent, url, label) {
   parent.append(a);
 }
 
-function buildEvidence(b) {
-  const box = document.createElement("section");
-  box.className = "ai-results";
-  box.setAttribute("aria-live", "polite");
+function usableAI(b) {
   const job = aiJobs.get(b.id);
-  aiParagraph(box, "Análise por IA · revisão humana obrigatória");
-  if (job.job_id) {
+  return !!(job?.job_id && job.status === "COMPLETED" && job.delivery_preview &&
+    job.inputText === b.text && job.inputSpeaker === (NAMES[labels[b.id]] || ""));
+}
+
+function aiUnavailableReason(b) {
+  const job = aiJobs.get(b.id);
+  if (!job) return "Este bloco ainda não foi analisado.";
+  if (job.status === "PROCESSING") return "A análise ainda está em andamento. Aguarde a conclusão ou envie sem IA.";
+  if (job.inputText !== b.text || job.inputSpeaker !== (NAMES[labels[b.id]] || ""))
+    return "O texto ou o falante mudou após a análise. Atualize a análise antes de incluí-la.";
+  return "A análise falhou ou está incompleta. Tente analisar novamente ou envie sem IA.";
+}
+
+function appendAIPreview(parent, cell) {
+  const text = cell.userEnteredValue.stringValue;
+  const runs = cell.textFormatRuns || [{startIndex: 0, format: {}}];
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    const part = document.createElement(run.format.bold ? "strong" : "span");
+    part.textContent = text.slice(run.startIndex, runs[i + 1]?.startIndex ?? text.length);
+    const url = run.format.link?.uri;
+    if (/^https?:\/\//i.test(url || "")) {
+      const a = document.createElement("a");
+      a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.append(part);
+      parent.append(a);
+    } else parent.append(part);
+  }
+}
+
+function buildEvidence(b) {
+  const box = document.createElement("details");
+  box.className = "ai-results";
+  box.open = aiExpanded.get(b.id) || false;
+  box.addEventListener("toggle", () => aiExpanded.set(b.id, box.open));
+  box.addEventListener("click", ev => ev.stopPropagation());
+  box.addEventListener("dblclick", ev => ev.stopPropagation());
+  const job = aiJobs.get(b.id) || {};
+  const sent = sendByBlock.get(b.id);
+  const frozen = isSheets() && sent && sent.status !== "failed" && !sendPending.has(b.id);
+  const previewCell = frozen ? sent.ai_cell : usableAI(b) ? job.delivery_preview : null;
+  const summary = document.createElement("summary");
+  summary.textContent = `Avaliação da IA · ${frozen ? "coluna F do envio" : previewCell ? "prévia da coluna F" : job.status === "PROCESSING" ? "analisando…" : "indisponível para envio"}`;
+  box.append(summary);
+  if (previewCell) {
+    const preview = document.createElement("div");
+    preview.className = "ai-preview";
+    appendAIPreview(preview, previewCell);
+    box.append(preview);
+  } else aiParagraph(box, frozen ? "Enviado sem avaliação da IA; coluna F vazia." : aiUnavailableReason(b));
+  const inspectId = frozen ? sent.ai_job_ids?.[0] || job.job_id : job.job_id;
+  if (inspectId) {
     const inspect = document.createElement("a");
-    inspect.href = `/debug?run=${encodeURIComponent(job.job_id)}`;
-    inspect.textContent = "Inspecionar análise";
+    inspect.href = `/debug?run=${encodeURIComponent(inspectId)}`;
+    inspect.textContent = "Inspecionar análise completa";
     inspect.target = "_blank"; inspect.rel = "noopener noreferrer";
-    inspect.addEventListener("click", ev => ev.stopPropagation());
     box.append(inspect);
   }
-  if (job.status === "PROCESSING") {
-    aiParagraph(box, "Extraindo afirmações e consultando a base…");
-    return box;
-  }
-  if (job.inputText !== b.text || job.inputSpeaker !== (NAMES[labels[b.id]] || "")) {
-    aiParagraph(box, "O bloco ou o falante mudou após esta análise. Analise novamente para atualizar.");
-  }
-  if (job.error) aiParagraph(box, job.error);
-  const result = job.result;
-  if (!result) return box;
   const refresh = document.createElement("button");
   refresh.textContent = "Atualizar base e reanalisar";
+  refresh.disabled = !aiEnabled || job.status === "PROCESSING" || frozen;
   refresh.addEventListener("click", ev => { ev.stopPropagation(); analyzeBlock(b.id, true); });
   box.append(refresh);
-  aiParagraph(box, `${result.provider} · ${result.model} · ${result.analyzed_at}`);
-  for (const error of result.errors) aiParagraph(box, error);
-  if (!result.claims.length && result.status === "COMPLETED") aiParagraph(box, "Nenhuma afirmação factual verificável identificada.");
-  const statuses = {MATCH_FOUND: "Registro aplicável encontrado", NO_MATCH: "Sem correspondência na base", REVIEW_REQUIRED: "Revisão necessária", SEARCH_ERROR: "Erro na busca"};
-  const relevance = {DIRECT_MATCH: "Correspondência direta", PARTIAL_MATCH: "Correspondência parcial", BACKGROUND_ONLY: "Contexto", NOT_RELEVANT: "Não relevante"};
-  for (const claim of result.claims) {
-    const article = document.createElement("article");
-    aiParagraph(article, `“${claim.quote}”`);
-    aiParagraph(article, claim.normalized_claim);
-    aiParagraph(article, `${statuses[claim.retrieval_status]} · Sugestão: ${claim.suggested_verdict || "sem veredicto"}`);
-    aiParagraph(article, claim.explanation);
-    aiParagraph(article, `Equipe sugerida: ${claim.assigned_team || (claim.team_candidates.length ? "ambígua: " + claim.team_candidates.join(", ") : "a definir")}`);
-    for (const error of claim.errors) aiParagraph(article, error);
-    for (const e of claim.evidence) {
-      const details = document.createElement("details");
-      const summary = document.createElement("summary");
-      summary.textContent = `${e.record_id} · ${e.sheet_name} · ${relevance[e.relevance]}`;
-      details.append(summary);
-      aiParagraph(details, `${e.record_type} · Equipe no registro: ${e.team || "—"}`);
-      aiParagraph(details, `Etiqueta existente (sem conversão automática): ${e.existing_label || "—"}`);
-      aiParagraph(details, e.summary);
-      if (e.basis_quote) aiParagraph(details, `Trecho usado pela IA (confira no registro): ${e.basis_quote}`);
-      if (e.context_compatible !== undefined && e.context_compatible !== null) aiParagraph(details, `Contexto compatível segundo a IA: ${e.context_compatible ? "sim" : "não"}`);
-      aiParagraph(details, `Dados consultados: ${e.retrieved_at}${e.cache_status === "STALE" ? " · CACHE DESATUALIZADO" : ""}`);
-      // Row links are always visible; documents remain distinct from the spreadsheet.
-      evidenceLink(article, e.spreadsheet_row_url, `${e.record_id} · Abrir linha original`);
-      for (const [index, url] of e.source_urls.entries()) evidenceLink(details, url, `Abrir fonte documental ${index + 1}`);
-      for (const [key, value] of Object.entries(e.fields)) if (value) aiParagraph(details, `${key}: ${value}`);
-      article.append(details);
-    }
-    box.append(article);
-  }
   return box;
+}
+
+function confirmWithoutAI(b) {
+  const dialog = $("#aiSendConfirm");
+  $("#aiSendReason").textContent = aiUnavailableReason(b);
+  $("#aiConfirmAnalyze").disabled = aiJobs.get(b.id)?.status === "PROCESSING";
+  aiConfirmOpen = true;
+  dialog.returnValue = "cancel";
+  return new Promise(resolve => {
+    dialog.addEventListener("close", () => {
+      aiConfirmOpen = false;
+      resolve(dialog.returnValue || "cancel");
+    }, {once: true});
+    dialog.showModal();
+  });
 }
 
 async function analyzeBlock(id, refresh = false) {
@@ -562,7 +610,7 @@ function render() {
     }
     const sent = sendByBlock.get(b.id);
     const sig = JSON.stringify([b.status, b.text, b.error, label, b.final, b.speaker_hint, suggestion, b.edited, b.id === editingId,
-      sent?.status, sent?.error, !!platform?.configured, platform?.target, settings, b.merged_edited, b.source_ids,
+      sent?.status, sent?.error, sent?.ai_cell, !!platform?.configured, platform?.target, settings, b.merged_edited, b.source_ids,
       isLocked(b.id), sendPending.has(b.id), sendUnconfirmed.has(b.id), labelPending.has(b.id), neighbour(b.id, 1)?.id, neighbour(b.id, 1)?.final,
       isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id], checkability[b.id], aiEnabled, aiJobs.get(b.id)]);
     const cur = rendered.get(b.id);
@@ -655,6 +703,8 @@ async function refreshState() {
     platform = data.platform;
     extraDestinations = data.extra_destinations || [];
     aiEnabled = !!data.ai_evidence?.enabled;
+    $("#aiControls").hidden = !aiEnabled;
+    $("#aiBypassWarning").hidden = !aiEnabled || !allowWithoutAI;
     if (!settingsPending) settings = data.settings || {};
     sessionStart = data.session_start;
     renderSettings();
@@ -715,23 +765,36 @@ function renderDestination(dest, suffix, always) {
 async function sendBlock(id) {
   const b = blocks.find((x) => x.id === id);
   const label = labels[id];
+  if (aiConfirmOpen) return;
   if (editingId || labelPending.has(id)) return toast("Salve a edição e aguarde o rótulo antes de enviar");
   if (b?.final === false) return toast("Espere o bloco finalizar para enviar");
   if (!b || !(label === "1" || label === "2")) return toast("Rotule o bloco com 1 (Lula) ou 2 (Flávio) antes");
   const prev = sendByBlock.get(id);
   if (alreadySent(b, label)) return toast("Bloco em envio ou já enviado");
+  let confirmedWithoutAI = false;
+  if (aiEnabled && !usableAI(b) && !allowWithoutAI) {
+    const choice = await confirmWithoutAI(b);
+    if (choice === "analyze") { analyzeBlock(id, true); return; }
+    if (choice !== "send") return;
+    confirmedWithoutAI = true;
+  }
+  // Polls and inference can finish while the modal is open. Always include the
+  // latest selected job; the server validates its frozen input before export.
+  const jobId = aiJobs.get(id)?.job_id;
   sendPending.add(id);
   render();
   try {
     const res = await fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ blockIds: [id] }),
+      body: JSON.stringify({ blockIds: [id], aiJobIds: jobId ? {[id]: jobId} : {},
+        allowWithoutAI: allowWithoutAI || confirmedWithoutAI }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
     stateRevision++;
-    sendByBlock.set(id, { status: data.status, label, blockIds: [id], text: data.status === "waiting" ? null : b.text });
+    sendByBlock.set(id, { status: data.status, label, blockIds: [id], text: data.status === "waiting" ? null : b.text,
+      ai_cell: data.ai_cell });
     render();
     toast(data.status === "waiting" ? `${NAMES[label]}: envia quando finalizar` :
       prev ? `Reenviado como ${NAMES[label]}` : `Na fila: ${NAMES[label]}`);
@@ -889,6 +952,7 @@ function moveSelection(delta) {
 }
 
 document.addEventListener("keydown", (ev) => {
+  if (aiConfirmOpen || ev.target.closest("#aiControls, .ai-results")) return;
   if (ev.target.closest("#timeControls")) return;
   if (ev.target === $("#search")) {
     if (ev.key === "Escape") { ev.target.value = ""; ev.target.blur(); render(); }
@@ -943,6 +1007,11 @@ $("#copyAll").addEventListener("click", () => {
 });
 
 $("#search").addEventListener("input", render);
+$("#allowWithoutAI").checked = false;
+$("#allowWithoutAI").addEventListener("change", ev => {
+  allowWithoutAI = ev.target.checked;
+  $("#aiBypassWarning").hidden = !allowWithoutAI;
+});
 for (const id of ["#debateDate", "#debateStart", "#showMinutage"]) $(id).addEventListener("change", saveSettings);
 $("#jump").addEventListener("click", scrollToLatest);
 window.addEventListener("scroll", () => {

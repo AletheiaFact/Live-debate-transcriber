@@ -11,6 +11,7 @@ from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import audit_trace
 from ai_client import AIError, Client
 from ai_config import Config
 from ai_evidence import Jobs, Service, route_team
@@ -356,6 +357,72 @@ class ProviderTests(unittest.TestCase):
                 self.assertEqual(Client(cfg, sdk).structured("JSON", {}, Extraction).claims, [])
                 self.assertEqual(sdk.chat.completions.create.call_args.kwargs["response_format"]["type"], mode)
                 self.assertIn("192.168.0.180" if provider == "ollama" else "api.openai.com", cfg.base_url)
+
+    def test_generation_parameters_match_provider_and_model(self):
+        cases = [
+            ("openai", "gpt-5.6-luna", 0.0, None),
+            ("openai", "gpt-5-mini-2025-08-07", 0.0, None),
+            ("openai", "gpt-6-sol", 0.0, None),
+            ("openai", "gpt-6-luna", 0.0, None),
+            ("openai", "o3-mini", 0.0, None),
+            ("openai", "o1", 0.0, None),
+            ("openai", "gpt-4.1-mini", 0.0, 0.0),
+            ("openai", "gpt-4o-mini", 0.5, 0.5),
+            ("openai", "gpt-4.1-mini", None, None),
+            ("ollama", "qwen3.5:4b", 0.0, 0.0),
+            ("ollama", "gpt-5-local", 0.0, 0.0),
+            ("ollama", "qwen3.5:4b", None, None),
+        ]
+        for provider, model, configured, expected in cases:
+            for mode in ("json_schema", "json_object"):
+                with self.subTest(provider=provider, model=model, temperature=configured, mode=mode):
+                    cfg = Config(provider=provider, model=model, temperature=configured, json_mode=mode)
+                    sdk = self.sdk()
+                    sdk.models.list.return_value.data = [SimpleNamespace(id=model)]
+                    self.assertEqual(Client(cfg, sdk).structured("JSON", {}, Extraction).claims, [])
+                    request = sdk.chat.completions.create.call_args.kwargs
+                    expected_limit = "max_completion_tokens" if provider == "openai" else "max_tokens"
+                    rejected_limit = "max_tokens" if provider == "openai" else "max_completion_tokens"
+                    self.assertEqual(request[expected_limit], 6000)
+                    self.assertNotIn(rejected_limit, request)
+                    if expected is None:
+                        self.assertNotIn("temperature", request)
+                    else:
+                        self.assertEqual(request["temperature"], expected)
+                    if provider == "ollama":
+                        self.assertEqual(request["reasoning_effort"], "none")
+                    else:
+                        self.assertNotIn("reasoning_effort", request)
+
+    def test_provider_errors_explain_failure_without_leaking_payloads(self):
+        cases = [
+            (400, "unsupported_parameter", "max_tokens", "max_tokens"),
+            (400, "unsupported_value", "temperature", "temperature"),
+            (400, "invalid_json_schema", "response_format", "schema JSON"),
+            (400, "unsupported_parameter", "secret-key-in-param", "requisição"),
+            (401, "invalid_api_key", None, "OPENAI_API_KEY"),
+            (403, None, None, "permissões"),
+            (429, None, None, "cota"),
+            (500, None, None, "servidor"),
+        ]
+        for status, code, parameter, expected in cases:
+            with self.subTest(status=status, code=code, parameter=parameter):
+                error = RuntimeError("secret-key-in-message and private response payload")
+                error.status_code, error.code, error.param = status, code, parameter
+                error.body = {"message": "secret-key-in-body"}
+                sdk = self.sdk()
+                sdk.chat.completions.create.side_effect = error
+                events = []
+                with audit_trace.Trace(events.append).activate():
+                    with self.assertRaises(AIError) as raised:
+                        Client(Config(), sdk).structured("JSON", {}, Extraction)
+                self.assertIn(expected, str(raised.exception))
+                self.assertIn(f"HTTP {status}", str(raised.exception))
+                self.assertNotIn("secret-key", str(raised.exception))
+                serialized = json.dumps(events, ensure_ascii=False)
+                self.assertIn(expected, serialized)
+                self.assertNotIn("secret-key", serialized)
+                self.assertNotIn("private response payload", serialized)
 
     def test_malformed_json_refusal_truncation_connectivity_missing_model(self):
         for content in ["not JSON", '{"claims":[],"extra":true}', '{"claims":"wrong"}']:

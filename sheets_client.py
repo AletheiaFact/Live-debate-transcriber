@@ -13,8 +13,8 @@ from datetime import datetime
 from platform_client import load_dotenv, now_iso
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Checabilidade", "Status", "Colaborador"]
-HEADER_RANGE = "A6:G6"
+HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Checabilidade", "Avaiação da IA", "Status", "Colaborador"]
+HEADER_RANGE = "A6:H6"
 NAMES = {"1": "Lula", "2": "Flávio"}
 RECEIPT_KEY = "ldt"
 LOCKED_STATUSES = {"queued", "sending", "verifying", "sent"}
@@ -31,7 +31,7 @@ class Config:
                                          ("GOOGLE_APPLICATION_CREDENTIALS", self.credentials_path)) if not value]
 
 
-def transcript_row(label, blocks, settings, checkability=""):
+def transcript_row(label, blocks, settings, checkability="", ai_summary=""):
     """Sheet timestamps are always elapsed from debate start, independent of UI display.
 
     checkability: the block's Jev score as an integer percentage, or "" when none is ready.
@@ -52,12 +52,14 @@ def transcript_row(label, blocks, settings, checkability=""):
     if first.tzinfo is None or not isinstance(end_ms, (int, float)):
         raise ValueError("o bloco não tem horários completos de início e fim")
     return [elapsed(first.timestamp()), elapsed(end_ms / 1000), NAMES[label],
-            " ".join(b["text"].strip() for b in blocks), checkability, "Novo"]
+            " ".join(b["text"].strip() for b in blocks), checkability, ai_summary, "Novo"]
 
 
 def sheet_row(row):
-    """Snapshots queued before the Checabilidade column (A:E) get an empty E, so Status stays in F."""
-    return row[:4] + [""] + row[4:] if len(row) == 5 else row
+    """Migrate old snapshots in memory: E is score, F is AI, G is Status."""
+    if len(row) == 5:
+        row = row[:4] + [""] + row[4:]
+    return row[:5] + [""] + row[5:] if len(row) == 6 else row
 
 
 def cell(value):
@@ -129,10 +131,15 @@ class Client:
         if item["spreadsheetId"] != self.cfg.spreadsheet_id or item["tab"] != self.cfg.tab:
             raise ValueError("restaure a configuração da planilha deste envio antes de continuar")
         sheet_id = self.check()
+        values = [cell(v) for v in sheet_row(item["row"])]
+        fields = "userEnteredValue"
+        if item.get("ai_cell"):
+            values[5] = item["ai_cell"]
+            fields += ",textFormatRuns,userEnteredFormat.wrapStrategy"
         body = {"requests": [
             {"appendCells": {"sheetId": sheet_id,
-                             "rows": [{"values": [cell(v) for v in sheet_row(item["row"])]}],
-                             "fields": "userEnteredValue"}},
+                             "rows": [{"values": values}],
+                             "fields": fields}},
             {"createDeveloperMetadata": {"developerMetadata": {
                 "metadataId": item["metadataId"], "metadataKey": RECEIPT_KEY,
                 "metadataValue": item["externalId"], "visibility": "DOCUMENT",
@@ -190,7 +197,7 @@ class Outbox:
         with self.lock:
             return any(bid in i["blockIds"] and i["status"] in LOCKED_STATUSES for i in self.items.values())
 
-    def enqueue(self, label, blocks, settings, checkability=""):
+    def enqueue(self, label, blocks, settings, checkability="", ai_cell=None, ai_job_ids=None):
         with self.lock:
             ids = [b["id"] for b in blocks]
             if any(set(ids).intersection(i["blockIds"]) and i["status"] in LOCKED_STATUSES
@@ -198,7 +205,10 @@ class Outbox:
                 raise ValueError("o bloco já está em envio ou foi enviado à planilha")
             item = {"externalId": uuid.uuid4().hex[:16], "metadataId": secrets.randbelow(2**31 - 1) + 1,
                     "spreadsheetId": self.cfg.spreadsheet_id, "tab": self.cfg.tab,
-                    "blockIds": ids, "label": label, "row": transcript_row(label, blocks, settings, checkability),
+                    "blockIds": ids, "label": label,
+                    "row": transcript_row(label, blocks, settings, checkability,
+                                          ai_cell["userEnteredValue"]["stringValue"] if ai_cell else ""),
+                    "ai_cell": ai_cell, "ai_job_ids": ai_job_ids or [],
                     "text": " ".join(b["text"].strip() for b in blocks),
                     "status": "queued", "uncertain": False, "attempts": 0, "next_try": 0,
                     "created_at": now_iso(), "error": None}
