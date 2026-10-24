@@ -26,7 +26,7 @@ def digest(value):
 def metadata(cfg):
     # Explicit allowlist: never serialize env, SDK objects, keys, credentials or headers.
     names = ("provider", "model", "json_mode", "temperature", "timeout_seconds",
-             "ollama_reasoning_effort", "max_candidates", "cache_ttl_seconds",
+             "ollama_reasoning_effort", "openai_reasoning_effort", "max_candidates", "cache_ttl_seconds",
              "max_rows_per_tab", "weights", "topic_teams")
     hashes = {}
     for name in ("ai_evidence.py", "ai_client.py", "claim_extraction.py", "evidence_search.py",

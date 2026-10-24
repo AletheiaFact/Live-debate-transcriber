@@ -13,6 +13,7 @@ class Config:
     model: str = "qwen3.5:4b"
     json_mode: str = "json_schema"
     ollama_reasoning_effort: str = "none"
+    openai_reasoning_effort: str = ""
     temperature: float | None = 0.0
     timeout_seconds: float = 90
     max_candidates: int = 10
@@ -36,6 +37,7 @@ class Config:
             model=os.environ.get(prefix + "_MODEL", cls.model if provider == "ollama" else "gpt-4.1-mini"),
             json_mode=os.environ.get("AI_EVIDENCE_JSON_MODE", "json_schema"),
             ollama_reasoning_effort=os.environ.get("AI_EVIDENCE_OLLAMA_REASONING_EFFORT", "none"),
+            openai_reasoning_effort=os.environ.get("AI_EVIDENCE_OPENAI_REASONING_EFFORT", "").strip().lower(),
             temperature=float(os.environ.get("AI_EVIDENCE_TEMPERATURE", "0")) if os.environ.get("AI_EVIDENCE_TEMPERATURE", "0").strip() else None,
             timeout_seconds=float(os.environ.get("AI_EVIDENCE_TIMEOUT_SECONDS", "90")),
             max_candidates=int(os.environ.get("AI_EVIDENCE_MAX_CANDIDATES", "10")),
@@ -52,6 +54,8 @@ class Config:
             raise ValueError("limites de cache inválidos")
         if cfg.json_mode not in {"json_schema", "json_object"}:
             raise ValueError("AI_EVIDENCE_JSON_MODE: use json_schema ou json_object")
+        if cfg.openai_reasoning_effort not in {"", "none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("AI_EVIDENCE_OPENAI_REASONING_EFFORT invalid value")
         if cfg.temperature is not None and not 0 <= cfg.temperature <= 2:
             raise ValueError("temperatura inválida")
         if not isinstance(cfg.weights, dict) or not isinstance(cfg.topic_teams, dict):

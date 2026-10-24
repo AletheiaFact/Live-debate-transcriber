@@ -82,8 +82,15 @@ def ffmpeg_command(args, audio_dir, list_path):
         if args.url.startswith(("http://", "https://")):
             cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
         cmd += ["-i", args.url]
-    else:
+    elif sys.platform == "win32":
+        device = args.device
+        if not device.startswith("audio="):
+            device = "audio=" + device
+        cmd += ["-f", "dshow", "-i", device]
+    elif sys.platform == "darwin":
         cmd += ["-f", "avfoundation", "-i", args.device]
+    else:
+        raise ValueError("--device supports Windows (DirectShow) and macOS (AVFoundation); use --url or --file on this OS")
     cmd += [
         "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
         "-f", "segment", "-segment_time", str(args.chunk_seconds), "-reset_timestamps", "1",
@@ -163,7 +170,12 @@ class Recorder:
         list_path = os.path.join(self.audio_dir, f"segments_{run_id}.csv")
         cmd = ffmpeg_command(self.args, self.audio_dir, list_path)
         log("starting ffmpeg: " + " ".join(cmd))
-        self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+        # A separate Windows process group lets Ctrl+Break close FFmpeg's WAV
+        # output cleanly without interrupting the recorder's final token drain.
+        process_options = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+                           if sys.platform == "win32" else {})
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     **process_options)
         reader = threading.Thread(
             target=soniox_stream.pcm_reader, args=(self.proc.stdout, self.streamer), daemon=True
         )
@@ -211,8 +223,9 @@ class Recorder:
         log("stopping (Ctrl+C again is not needed, finishing the current chunk)")
         self.stop.set()
         if self.proc and self.proc.poll() is None:
-            # SIGINT lets ffmpeg close the current chunk cleanly.
-            self.proc.send_signal(signal.SIGINT)
+            # Both signals let ffmpeg close the current chunk cleanly.
+            self.proc.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32"
+                                  else signal.SIGINT)
 
 
 def main():
@@ -222,7 +235,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = p.add_mutually_exclusive_group()
     src.add_argument("--url", help="stream URL ffmpeg can read (HLS .m3u8, http, rtmp, ...)")
-    src.add_argument("--device", help='macOS audio device for avfoundation, e.g. ":0" or ":BlackHole 2ch"')
+    src.add_argument("--device", help='Windows DirectShow audio device name, e.g. "CABLE Output (VB-Audio Virtual Cable)"; '
+                     'on macOS, AVFoundation input, e.g. ":BlackHole 2ch"')
     src.add_argument("--file", help="pre-recorded audio/video file, played back in real time (rehearsal)")
     p.add_argument("--data-dir", default=os.path.join(here, "data", "live"))
     p.add_argument("--chunk-seconds", type=int, default=15, help="length of the archived WAV chunks")
@@ -263,6 +277,8 @@ def main():
 
     if not (args.url or args.device or args.file):
         p.error("one of --url, --device or --file is required")
+    if args.device and sys.platform not in ("win32", "darwin"):
+        p.error("--device supports Windows and macOS; use --url or --file on this OS")
     if args.file and not os.path.isfile(args.file):
         sys.exit(f"file not found: {args.file}")
 

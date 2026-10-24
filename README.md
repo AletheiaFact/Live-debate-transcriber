@@ -51,8 +51,8 @@ is lost.
 - Optional, to send blocks to Aletheia: a platform that includes the debate
   transcript API (AletheiaFact/aletheia PR #2655) and a fact-checker account.
 
-`--device` capture uses macOS AVFoundation. `--url` and `--file` work anywhere
-ffmpeg runs.
+`--device` capture uses DirectShow on Windows and AVFoundation on macOS.
+`--url` and `--file` work anywhere ffmpeg runs.
 
 ## Setup
 
@@ -158,7 +158,8 @@ root and choose one input:
 .\.venv\Scripts\python.exe recorder.py --data-dir data/debate --url "https://example.com/stream.m3u8"
 ```
 
-On Windows, use `--file` or `--url`; `--device` uses macOS AVFoundation.
+To capture a video playing in any browser or desktop app on Windows, use the
+audio-device setup below. No YouTube URL or direct stream URL is needed.
 For a rehearsal without Soniox, use a real local audio/video file with `--fake`:
 
 ```powershell
@@ -187,6 +188,48 @@ available for new analyses; older saved results cannot recover missing steps.
 Stop each process with **Ctrl+C**. Restart the relevant processes after changing
 `.env`; restart `server.py` after updating the dashboard or analysis code. Run only
 one operator server per session directory.
+
+### Capture PC playback on Windows (any video platform)
+
+The recorder captures a Windows **recording device**. To feed it your browser's
+playback, install [VB-CABLE](https://vb-audio.com/Cable/) using its instructions
+(administrator installation and a restart are required).
+
+1. In Windows **Settings > System > Sound**, choose **CABLE Input (VB-Audio
+   Virtual Cable)** as the output device, then play the video. You can instead
+   select this output only for your browser in **Volume mixer**. Audio sent to
+   CABLE Input becomes available to recording apps through **CABLE Output**.
+2. To hear the video too, open **More sound settings > Recording**, select
+   **CABLE Output > Properties > Listen**, enable **Listen to this device**, and
+   choose your physical headphones/speakers as the playback device.
+3. List the recording-device names FFmpeg can see:
+
+   ```powershell
+   ffmpeg -hide_banner -list_devices true -f dshow -i dummy
+   ```
+
+   The listing command may end with an error about `dummy`; the device list is
+   the intended result. Copy the exact audio-device name from the list.
+4. Start the operator server and recorder in separate PowerShell terminals:
+
+   ```powershell
+   # Terminal 1
+   .\.venv\Scripts\python.exe server.py --data-dir data/pc-audio
+   ```
+
+   ```powershell
+   # Terminal 2; replace the device name if your listing differs.
+   .\.venv\Scripts\python.exe recorder.py --data-dir data/pc-audio --device "CABLE Output (VB-Audio Virtual Cable)"
+   ```
+
+   Open http://127.0.0.1:8765/ and play the video. Finalized transcription blocks
+   appear there, and audio is archived in `data/pc-audio/audio/`. Stop with
+   **Ctrl+C**. Restore your normal sound output when finished.
+
+If an enabled **Stereo Mix** recording device is available, you can use its
+exact listed name with `--device` instead of installing VB-CABLE. Its ability to
+capture playback depends on your sound driver and the output device in use.
+Selecting an ordinary microphone records the room rather than digital PC audio.
 
 ### macOS and Linux
 

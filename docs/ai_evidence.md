@@ -59,6 +59,10 @@ strict Python validation. Invalid JSON, refusals, truncated outputs, invented
 record references, and altered exact quotes are rejected. Ollama uses
 `reasoning_effort=none` for latency; configure
 `AI_EVIDENCE_OLLAMA_REASONING_EFFORT=` to omit the option for older servers.
+For OpenAI GPT-6 Luna, set `AI_EVIDENCE_OPENAI_REASONING_EFFORT=none`
+to disable reasoning for lower latency. Leave it blank (the default) to omit
+`reasoning_effort`. Supported levels depend on the configured model; models
+without reasoning support require a blank value. Restart the server after edits.
 OpenAI requests use `max_completion_tokens`; Ollama requests use `max_tokens`.
 Generation defaults to temperature 0 for repeatability where supported. For
 OpenAI GPT-5 and later models (including `gpt-5.6-luna` and `gpt-6-luna`) and o-series reasoning
