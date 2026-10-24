@@ -81,6 +81,41 @@ Source themes are kept, so *Descombinar* needs no new call.
 | `state` | The exact state sent to Jev; the UI compares its `target_block` to spot stale themes |
 | `scored_at` | When the theme was stored |
 
+## Operator page
+
+`server.py` reads `themes.jsonl` and shows each block's theme next to the
+speaker and the checkability score:
+
+| Badge | Themes |
+|---|---|
+| purple | Economia e finanças públicas, Saúde, educação e políticas sociais |
+| teal | Democracia, Justiça e segurança, Meio ambiente, infraestrutura e internacional |
+| outline | Sem tema |
+
+The badge adds `?` when the two most likely themes are less than
+`THEME_CLOSE` (0.15) apart; the short names and that gap live only in
+`static/index.html`. A faded badge means the block's text changed and
+`themes.py` has not caught up yet. The tooltip shows the full theme and family,
+the two most likely themes with their probabilities, the method, the model and
+the rubric version, and flags mock themes. Blocks without a theme, including
+mediator blocks, have no badge.
+
+## Google Sheets
+
+When a block is sent to Sheets, its theme name goes in column **G — Tema**,
+between the AI assessment (F) and Status (H). `Sem tema` is written out, so it is
+not confused with a missing theme. The row is a snapshot taken when **Enviar**
+is pressed and is never updated. F is left empty when there is no theme yet,
+when the text changed since it was suggested, or when the theme is a mock.
+
+Several blocks sent together have no "best" theme: F gets the theme only when
+every block has the same current theme, and is empty otherwise.
+
+Existing tabs need the column inserted by hand (see the README). Rows queued
+before that are sent with G empty, so Status stays in H.
+
+Themes are not sent to the Aletheia platform.
+
 ## Mock mode and checks
 
 With the placeholder key, themes are random but deterministic per state and

@@ -13,8 +13,9 @@ from datetime import datetime
 from platform_client import load_dotenv, now_iso
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Checabilidade", "Avaiação da IA", "Status", "Colaborador"]
-HEADER_RANGE = "A6:H6"
+HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Checabilidade", "Avaiação da IA", "Tema", "Status",
+           "Colaborador"]
+HEADER_RANGE = "A6:I6"
 NAMES = {"1": "Lula", "2": "Flávio"}
 RECEIPT_KEY = "ldt"
 LOCKED_STATUSES = {"queued", "sending", "verifying", "sent"}
@@ -31,10 +32,11 @@ class Config:
                                          ("GOOGLE_APPLICATION_CREDENTIALS", self.credentials_path)) if not value]
 
 
-def transcript_row(label, blocks, settings, checkability="", ai_summary=""):
+def transcript_row(label, blocks, settings, checkability="", ai_summary="", theme=""):
     """Sheet timestamps are always elapsed from debate start, independent of UI display.
 
     checkability: the block's Jev score as an integer percentage, or "" when none is ready.
+    theme: the block's Jev theme name, or "" when none is ready.
     """
     if not settings.get("debate_start"):
         raise ValueError("configure o início do debate antes de enviar à planilha")
@@ -52,14 +54,16 @@ def transcript_row(label, blocks, settings, checkability="", ai_summary=""):
     if first.tzinfo is None or not isinstance(end_ms, (int, float)):
         raise ValueError("o bloco não tem horários completos de início e fim")
     return [elapsed(first.timestamp()), elapsed(end_ms / 1000), NAMES[label],
-            " ".join(b["text"].strip() for b in blocks), checkability, ai_summary, "Novo"]
+            " ".join(b["text"].strip() for b in blocks), checkability, ai_summary, theme, "Novo"]
 
 
 def sheet_row(row):
-    """Migrate old snapshots in memory: E is score, F is AI, G is Status."""
+    """Migrate old snapshots in memory: E is score, F is AI, G is theme, H is Status."""
     if len(row) == 5:
         row = row[:4] + [""] + row[4:]
-    return row[:5] + [""] + row[5:] if len(row) == 6 else row
+    if len(row) == 6:
+        row = row[:5] + [""] + row[5:]
+    return row[:6] + [""] + row[6:] if len(row) == 7 else row
 
 
 def cell(value):
@@ -197,7 +201,7 @@ class Outbox:
         with self.lock:
             return any(bid in i["blockIds"] and i["status"] in LOCKED_STATUSES for i in self.items.values())
 
-    def enqueue(self, label, blocks, settings, checkability="", ai_cell=None, ai_job_ids=None):
+    def enqueue(self, label, blocks, settings, checkability="", ai_cell=None, ai_job_ids=None, theme=""):
         with self.lock:
             ids = [b["id"] for b in blocks]
             if any(set(ids).intersection(i["blockIds"]) and i["status"] in LOCKED_STATUSES
@@ -207,7 +211,7 @@ class Outbox:
                     "spreadsheetId": self.cfg.spreadsheet_id, "tab": self.cfg.tab,
                     "blockIds": ids, "label": label,
                     "row": transcript_row(label, blocks, settings, checkability,
-                                          ai_cell["userEnteredValue"]["stringValue"] if ai_cell else ""),
+                                          ai_cell["userEnteredValue"]["stringValue"] if ai_cell else "", theme),
                     "ai_cell": ai_cell, "ai_job_ids": ai_job_ids or [],
                     "text": " ".join(b["text"].strip() for b in blocks),
                     "status": "queued", "uncertain": False, "attempts": 0, "next_try": 0,
