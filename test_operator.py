@@ -91,6 +91,23 @@ class OperatorTests(unittest.TestCase):
         self.store.set_edits({"a": "first, edited"})
         self.assertTrue(self.store.state()["checkability"]["a"]["stale"])
 
+    def test_themes_in_state_and_stale_after_edit(self):
+        self.assertEqual(self.store.state()["themes"], {})
+        with open(self.store.themes_path, "a", encoding="utf-8") as f:
+            for bid, text, theme in [("a", "first", "Sem tema"), ("b", "old", "Sem tema"),
+                                     ("b", "second", "Economia e finanças públicas")]:
+                f.write(json.dumps({"block_id": bid, "theme": theme, "family": None, "probabilities": {theme: 0.9},
+                                    "confidence": 0.8, "method": "jev_direct", "model": "jev-1.13.0",
+                                    "theme_rubric_version": 1, "state": {"target_block": text}}) + "\n")
+            f.write('{"block_id": "c", "the')  # themes.py mid-write
+        themes = self.store.state()["themes"]
+        self.assertEqual(sorted(themes), ["a", "b"])
+        self.assertEqual((themes["b"]["theme"], themes["b"]["stale"]), ("Economia e finanças públicas", False))
+        self.assertEqual(themes["b"]["probabilities"], {"Economia e finanças públicas": 0.9})
+        self.store.set_edits({"a": "first, edited"})
+        self.assertTrue(self.store.state()["themes"]["a"]["stale"])
+        self.assertFalse(self.store.state()["checkability"])  # separate files
+
     def test_settings_persist_and_validate_timezone(self):
         settings = {"debate_start": "2026-10-22T23:30:00-04:00", "show_minutage": True}
         self.store.set_settings(settings)

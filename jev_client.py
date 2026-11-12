@@ -1,10 +1,11 @@
 """Client for Jev, TypeSafe's evaluation model, through the TypeSafe API.
 
-Ported from ai_task_processor/services/jev_client.py (score questions only),
-on the standard library like the rest of the recorder and server.
+Ported from ai_task_processor/services/jev_client.py (score and choice
+questions), on the standard library like the rest of the recorder and server.
 
 POST {base_url}/v1/systemone with {"state", "model", "questions"} returns, per
-question, a score with probabilities per level ("0", "1", ...) and a confidence.
+question, a confidence and either a score with probabilities per level
+("0", "1", ...) or a choice with probabilities per option name.
 
 With the placeholder API key the client returns deterministic mock answers in
 the real wire format, so everything after Jev runs at zero cost. An empty key
@@ -30,6 +31,7 @@ USER_AGENT = "debate-transcriber/1.0"
 
 # Overload, rate limiting and upstream hiccups are worth waiting out
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+QUESTION_TYPES = {"score", "choice"}
 
 
 class JevError(Exception):
@@ -80,21 +82,23 @@ class JevClient:
         return self.cfg.api_key == TYPESAFE_API_KEY_PLACEHOLDER
 
     def evaluate(self, state, questions):
-        """Ask Jev score questions about the state.
+        """Ask Jev score or choice questions about the state.
 
         questions: {name: {"type": "score", "instructions": str, "criteria": [level0, level1, ...]}}
-        Returns {"answers": {name: {"score", "probabilities": [p0, p1, ...], "confidence"}},
-                 "model": str, "usage": {...}}; model is "jev-mock" for mock answers.
+                   or {name: {"type": "choice", "instructions": str, "criteria": {option: description}}}
+        Returns {"answers": {name: answer}, "model": str, "usage": {...}}; model is "jev-mock" for mock answers.
+        A score answer is {"score", "probabilities": [p0, p1, ...], "confidence"};
+        a choice answer is {"choice", "probabilities": {option: p}, "confidence"}, in criteria order.
         """
+        for name, question in questions.items():
+            if question.get("type") not in QUESTION_TYPES:
+                raise JevError(f"unsupported Jev question type for '{name}': {question.get('type')}")
         if self.is_mock:
             # Loud on purpose: a placeholder key in a real session must not go unnoticed
             log(f"WARNING: using mock Jev answers (TYPESAFE_API_KEY is the placeholder), questions={list(questions)}")
             return self._parse(self._mock_response(state, questions), questions, MOCK_MODEL)
         if not self.cfg.api_key:
             raise JevError("TYPESAFE_API_KEY is not configured")
-        for name, question in questions.items():
-            if question.get("type") != "score":
-                raise JevError(f"unsupported Jev question type for '{name}': {question.get('type')}")
 
         url = f"{self.cfg.base_url}/v1/systemone"
         headers = {
@@ -138,6 +142,11 @@ class JevClient:
         answers = {}
         for name, question in questions.items():
             raw = raw_answers[name]
+            confidence = raw.get("confidence")
+            confidence = None if confidence is None else float(confidence)
+            if question["type"] == "choice":
+                answers[name] = JevClient._parse_choice(name, raw, list(question["criteria"]), confidence)
+                continue
             levels = len(question["criteria"])
             probabilities = raw.get("probabilities") or {}
             try:
@@ -145,12 +154,21 @@ class JevClient:
                 score = float(raw["score"])
             except (KeyError, TypeError, ValueError):
                 raise JevError(f"Jev score answer '{name}' expected {levels} levels, got {raw!r:.300}")
-            confidence = raw.get("confidence")
-            answers[name] = {"score": score, "probabilities": ordered,
-                             "confidence": None if confidence is None else float(confidence)}
+            answers[name] = {"score": score, "probabilities": ordered, "confidence": confidence}
         usage = (data or {}).get("usage") or {}
         return {"answers": answers, "model": (data or {}).get("model") or model,
                 "usage": {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens")}}
+
+    @staticmethod
+    def _parse_choice(name, raw, options, confidence):
+        probabilities = raw.get("probabilities") or {}
+        try:
+            ordered = {option: float(probabilities[option]) for option in options}
+        except (KeyError, TypeError, ValueError):
+            raise JevError(f"Jev choice answer '{name}' expected probabilities for {options}, got {raw!r:.300}")
+        if raw.get("choice") not in ordered:
+            raise JevError(f"Jev choice answer '{name}' chose {raw.get('choice')!r}, not one of {options}")
+        return {"choice": raw["choice"], "probabilities": ordered, "confidence": confidence}
 
     @staticmethod
     def _mock_response(state, questions):
@@ -163,10 +181,16 @@ class JevClient:
             peak = rng.randrange(size)  # one clear peak, like Jev usually returns
             weights = [3.0 if i == peak else rng.uniform(0.05, 0.6) for i in range(size)]
             probabilities = [w / sum(weights) for w in weights]
+            # TypeSafe's definition: (count * peak - 1) / (count - 1)
+            confidence = (size * max(probabilities) - 1) / (size - 1) if size > 1 else 1.0
+            if question["type"] == "choice":
+                options = list(question["criteria"])
+                answers[name] = {"choice": options[peak], "confidence": confidence,
+                                 "probabilities": dict(zip(options, probabilities))}
+                continue
             answers[name] = {
                 "score": sum(i * p for i, p in enumerate(probabilities)),
                 "probabilities": {str(i): p for i, p in enumerate(probabilities)},
-                # TypeSafe's definition: (count * peak - 1) / (count - 1)
-                "confidence": (size * max(probabilities) - 1) / (size - 1) if size > 1 else 1.0,
+                "confidence": confidence,
             }
         return {"answers": answers, "model": MOCK_MODEL, "usage": {}}

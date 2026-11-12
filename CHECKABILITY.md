@@ -172,7 +172,9 @@ scores. Unscored blocks, including mediator blocks, have no badge.
 ## Google Sheets
 
 When a block is sent to Sheets, its score goes in column **E — Checabilidade**
-as a whole number from 0 to 100. Status moves to F and Colaborador to G. The
+as a whole number from 0 to 100. The AI assessment is in F, the theme from
+`themes.py` in G (see [THEMES.md](THEMES.md)), and Status and Colaborador in H
+and I. The
 row is a snapshot taken when **Enviar** is pressed and is never updated. E is
 left empty when there is no score yet, when the text changed since it was
 scored, or when the score is a mock (`jev-mock`). Several blocks sent together

@@ -323,6 +323,12 @@ one by default, or the block you clicked or moved to with ↑/↓.
   above 60%. A faded score means the text changed and a new score is pending.
   Hover for the method and model. Sending to Sheets writes the score in
   column E; it is not sent to the platform.
+- **Themes:** when `themes.py` is running, each block also shows the theme Jev
+  suggests: purple for economy and social policy, teal for institutions and
+  other subjects, an outline for *Sem tema*. A `?` means the two most likely
+  themes are close; hover to see both, the method and the model. A faded theme
+  means the text changed and a new theme is pending. Sending to Sheets writes
+  the theme in column G; it is not sent to the platform.
 - **Number highlights:** numbers, percentages, dates and amounts are highlighted,
   because those are the claims most worth checking.
 - **Editing:** when the start of one person's speech lands in the previous
@@ -374,7 +380,7 @@ Run this read-only check before starting `server.py`:
 python sheets_client.py
 ```
 
-The tab must have the following headers in **A6:H6**. Each selected block becomes
+The tab must have the following headers in **A6:I6**. Each selected block becomes
 one row, starting at **row 7** when the template has no transcript data:
 
 | Column | Value sent |
@@ -385,17 +391,24 @@ one row, starting at **row 7** when the template has no transcript data:
 | D — Transcrição | Final text, including operator corrections and merges |
 | E — Checabilidade | Jev checkability score, `0`–`100` (a number), or empty when no current score is ready |
 | F — Avaliação da IA | Formatted AI assessment: claims, suggested verdicts, selected record/source links and explanations; empty when explicitly sent without a usable analysis |
-| G — Status | `Novo` |
-| H — Colaborador | Left for reviewers |
+| G — Tema | Jev theme suggestion, for example `Economia e finanças públicas` or `Sem tema`, or empty when no current theme is ready |
+| H — Status | `Novo` |
+| I — Colaborador | Left for reviewers |
 
-Column E remains the numeric Jev score. To add the AI assessment column to the
-previous layout, insert a new column F and enter `Avaliação da IA` in F6.
-Status and Colaborador move to G and H. The legacy names `Etiqueta` in C6 and
-`Avaiação da IA` in F6 are also accepted. Columns A:H must stay in the documented
-order; additional review columns after H are allowed. A validation error identifies
-the mismatched cells and their expected and actual headers.
-`python sheets_client.py` confirms the headers without writing. Older queued rows
-are migrated in memory with an empty F; rows predating Checabilidade also get an empty E.
+Column E remains the numeric Jev score. To update an existing tab, add the
+missing columns in order, each with **Insert 1 column left**:
+
+- Without Checabilidade: insert at column E and type `Checabilidade` in E6.
+- Without the AI assessment: insert at column F and type `Avaliação da IA` in F6.
+- Without Tema: insert at column G and type `Tema` in G6.
+
+Existing rows, statuses and dropdowns move right with Status and Colaborador.
+The legacy names `Etiqueta` in C6 and `Avaiação da IA` in F6 are also accepted.
+Columns A:I must stay in the documented order; additional review columns after I
+are allowed. `python sheets_client.py` confirms the headers without writing, and
+sending is refused until they match; a validation error identifies the mismatched
+cells and their expected and actual headers. Older queued rows are migrated in
+memory with the new columns empty, so Status always lands in H.
 
 The collapsed **Avaliação da IA** panel shows the same text, bold labels and
 clickable links as column F. It selects up to three reliable direct/partial
@@ -416,8 +429,10 @@ jobs, and the queued assessment remains immutable through retries and restarts.
 
 The score is the one shown on the block when you press **Enviar**. It is left
 empty if `checkability.py` has not scored the block yet, if the text changed
-since it was scored, or if the score is a mock. Sent rows are never updated, so
-wait for the badge when the score matters.
+since it was scored, or if the score is a mock. The theme follows the same
+rules. Several blocks sent together get a theme only when they all have the
+same one; otherwise G is left empty. Sent rows are never updated, so wait for
+the badges when the score or the theme matters.
 
 Set **Início do debate** and its date in the operator page before sending. Sheet
 timestamps always use elapsed debate time, even if the page displays clock time.
@@ -521,6 +536,16 @@ Set `TYPESAFE_API_KEY` and `JEV_MODEL` in `.env`. See
 [CHECKABILITY.md](CHECKABILITY.md) for the rubric, the formula, the context sent
 with each block and mock mode.
 
+`themes.py` asks Jev to suggest one theme per block from a closed list, with the
+same context, skip rules and mock mode, and writes `themes.jsonl`:
+
+```bash
+python3 themes.py --data-dir data/debate --watch
+python3 themes.py --check            # reference examples with the expected theme
+```
+
+See [THEMES.md](THEMES.md) for the options, the families and combined blocks.
+
 ## Resilience
 
 - **Reconnects:** if the WebSocket drops or Soniox stops answering for 20 s, the
@@ -547,7 +572,8 @@ sheets_client.py     Google Sheets sending, delivery receipts and read-only chec
 requirements.txt     optional Google Sheets dependencies
 contexto.txt         context terms for the 2026 debate
 checkability.py      Jev checkability scores per block (rubric, context, store)
-jev_client.py        TypeSafe API client for Jev (retries, mock mode)
+themes.py            Jev theme suggestion per block (options, families, store)
+jev_client.py        TypeSafe API client for Jev (score and choice questions, retries, mock mode)
 
 data/<session>/blocks.jsonl   one JSON line per block update (last line per id wins)
 data/<session>/labels.json    speaker labels (server.py)
@@ -556,6 +582,7 @@ data/<session>/operator.json  session time settings and reversible block merges
 data/<session>/outbox.jsonl   send queue (server.py)
 data/<session>/sheets_outbox.jsonl  immutable Sheets snapshots and delivery status
 data/<session>/checkability.jsonl  Jev scores per block (last line per block id wins)
+data/<session>/themes.jsonl   Jev theme suggestions per block (last line per block id wins)
 data/<session>/status.json    recorder heartbeat, every 2 s
 data/<session>/audio/         16 kHz mono WAV chunks
 ```
