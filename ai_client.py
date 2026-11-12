@@ -72,6 +72,8 @@ class Client:
             options[token_limit] = 6000
             if self.cfg.provider == "ollama" and self.cfg.ollama_reasoning_effort:
                 options["reasoning_effort"] = self.cfg.ollama_reasoning_effort
+            if self.cfg.provider == "openai" and self.cfg.openai_reasoning_effort:
+                options["reasoning_effort"] = self.cfg.openai_reasoning_effort
             request = dict(model=self.cfg.model,
                            messages=[{"role": "system", "content": system + "\nResponda apenas JSON conforme o schema: " + json.dumps(contract)},
                                      {"role": "user", "content": json.dumps(data, ensure_ascii=False)}],

@@ -394,6 +394,23 @@ class ProviderTests(unittest.TestCase):
                     else:
                         self.assertNotIn("reasoning_effort", request)
 
+    def test_openai_reasoning_effort_from_env(self):
+        for effort in ("none", "low", ""):
+            with self.subTest(effort=effort), patch.dict(os.environ, {
+                "AI_EVIDENCE_PROVIDER": "openai",
+                "AI_EVIDENCE_OPENAI_MODEL": "gpt-6-luna",
+                "AI_EVIDENCE_OPENAI_REASONING_EFFORT": effort,
+            }, clear=True):
+                cfg = Config.from_env()
+                sdk = self.sdk()
+                sdk.models.list.return_value.data = [SimpleNamespace(id=cfg.model)]
+                Client(cfg, sdk).structured("JSON", {}, Extraction)
+                request = sdk.chat.completions.create.call_args.kwargs
+                if effort:
+                    self.assertEqual(request["reasoning_effort"], effort)
+                else:
+                    self.assertNotIn("reasoning_effort", request)
+
     def test_provider_errors_explain_failure_without_leaking_payloads(self):
         cases = [
             (400, "unsupported_parameter", "max_tokens", "max_tokens"),
