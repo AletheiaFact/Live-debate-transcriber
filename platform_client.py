@@ -256,7 +256,7 @@ class Outbox:
             f.flush()
             os.fsync(f.fileno())
 
-    def enqueue(self, label, blocks, waiting=False):
+    def enqueue(self, label, blocks, waiting=False, checkability=None):
         # The label is part of the id: relabelling a sent block and sending it
         # again creates a corrected draft instead of being skipped.
         if len(blocks) == 1:
@@ -279,6 +279,7 @@ class Outbox:
                 "blockIds": [b["id"] for b in blocks],
                 "text": None if waiting else " ".join(b["text"].strip() for b in blocks),
                 "startedAt": blocks[0]["start"],
+                "checkability": checkability,
                 "status": "waiting" if waiting else "queued",
                 "attempts": 0,
                 "next_try": 0,
@@ -356,6 +357,8 @@ class Outbox:
             return self._retry_later(item, "auth", "não logado: rode python3 platform_client.py login")
         turn = {"personality": item["personality"], "text": item["text"],
                 "externalId": item["externalId"], "startedAt": item["startedAt"]}
+        if isinstance(item.get("checkability"), int):  # 0-100 triage score; omitted when there is none
+            turn["checkability"] = item["checkability"]
         url = f"{self.cfg.aletheia_url}/api/claim/debate/{self.cfg.debate_id}/append"
         try:
             status, body = http_json("POST", url, {"turns": [turn], "isLive": True},

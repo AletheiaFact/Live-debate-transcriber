@@ -58,16 +58,17 @@ def answer(probabilities, model="jev-1.13.0"):
 class FakeJev:
     """Transport that records requests and answers from a list of responses or a function of the state."""
 
-    def __init__(self, responses=None, by_state=None):
+    def __init__(self, responses=None, by_state=None, reply=answer):
         self.responses = list(responses or [])
         self.by_state = by_state
+        self.reply = reply  # turns what by_state returns into a response
         self.requests = []
 
     def __call__(self, url, headers, body, timeout):
         request = json.loads(body)
         self.requests.append((url, headers, request))
         if self.by_state:
-            return answer(self.by_state(request["state"]))
+            return self.reply(self.by_state(request["state"]))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response

@@ -150,8 +150,10 @@ class Scores:
     strategy for combined blocks can change later without calling Jev again.
     """
 
+    FILENAME = "checkability.jsonl"
+
     def __init__(self, data_dir):
-        self.path = os.path.join(data_dir, "checkability.jsonl")
+        self.path = os.path.join(data_dir, self.FILENAME)
         self.items = {}
         if os.path.exists(self.path):
             with open(self.path, encoding="utf-8") as f:
@@ -175,18 +177,23 @@ class Scores:
             "state": state,
             "scored_at": now_iso(),
         }
+        return self.append(item)
+
+    def append(self, item):
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        self.items[block["id"]] = item
+        self.items[item["block_id"]] = item
         return item
 
 
-def pending(data_dir, scores, model, now=None):
-    """(block, state, digest, sources) for every block whose stored score is missing or stale.
+def pending(data_dir, scores, model, now=None, sources_for=covering_sources, digest_for=input_hash):
+    """(block, state, digest, sources) for every block whose stored result is missing or stale.
 
-    sources: the source scores to take the maximum of, or None to call Jev.
+    sources: the source results a combined block is derived from, or None to call Jev.
+    themes.py passes its own sources_for and digest_for, so both skip and
+    contextualise blocks the same way.
     """
     store = Store(data_dir)  # fresh each pass: the server rewrites labels, edits and merges
     with store.lock:
@@ -201,20 +208,23 @@ def pending(data_dir, scores, model, now=None):
         if not block.get("merged") and settled is not None and now - settled < SETTLE_SECONDS:
             continue
         state = build_state(block, blocks[:i], labels)
-        sources = covering_sources(block, scores, model) if block.get("merged") else None
-        digest = input_hash(state, model, sources or ())
+        sources = sources_for(block, scores, model) if block.get("merged") else None
+        digest = digest_for(state, model, sources or ())
         stored = scores.get(block["id"])
         if not stored or stored.get("input_hash") != digest:
             out.append((block, state, digest, sources))
     return out
 
 
+def hashed_model(client):
+    """The model in input hashes: mock results must not satisfy a real key later."""
+    return jev_client.MOCK_MODEL if client.is_mock else client.cfg.model
+
+
 def score_pending(data_dir, client, scores):
     """Score every pending block once; returns how many were scored. JevError stops the pass."""
     done = 0
-    # Mock scores must not satisfy a real key later, so the mock model is part of the hash.
-    model = jev_client.MOCK_MODEL if client.is_mock else client.cfg.model
-    for block, state, digest, sources in pending(data_dir, scores, model):
+    for block, state, digest, sources in pending(data_dir, scores, hashed_model(client)):
         if sources:
             result, best = max_of_sources(sources)
             item = scores.save(block, result, state, digest, best_source_id=best)
@@ -238,10 +248,10 @@ CHECK_CASES = [
 ]
 
 
-def check_states():
+def check_states(cases=CHECK_CASES):
     """The reference cases as Jev states, through the same build_state as real blocks."""
     states = []
-    for text, previous in CHECK_CASES:
+    for text, previous, *_ in cases:
         blocks = [{"id": f"p{i}", "text": t} for i, (_, t) in enumerate(previous)]
         labels = {f"p{i}": label for i, (label, _) in enumerate(previous)}
         labels["target"] = "1"
@@ -249,21 +259,52 @@ def check_states():
     return states
 
 
-def main():
+def parse_args(doc, check_help):
     load_dotenv()
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(description=doc, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--data-dir", default=os.path.join(HERE, "data", "live"))
     p.add_argument("--watch", action="store_true", help="keep scoring as blocks finalize (Ctrl+C stops)")
-    p.add_argument("--check", action="store_true", help="score the reference examples and exit")
-    args = p.parse_args()
+    p.add_argument("--check", action="store_true", help=check_help)
+    return p.parse_args()
+
+
+def connect(rubric):
+    """A JevClient for the configured key; exits when the key is empty."""
     cfg = jev_client.Config()
     if not cfg.api_key:
         sys.exit(f"TYPESAFE_API_KEY is not set; use '{jev_client.TYPESAFE_API_KEY_PLACEHOLDER}' for mock answers")
     client = JevClient(cfg)
     if client.is_mock:
-        log(f"model {jev_client.MOCK_MODEL}: placeholder key, answers are random, not real scores")
+        log(f"model {jev_client.MOCK_MODEL}: placeholder key, answers are random, not real results")
     else:
-        log(f"model {cfg.model}, rubric v{RUBRIC_VERSION}")
+        log(f"model {cfg.model}, {rubric}")
+    return client
+
+
+def run(data_dir, watch, run_pass):
+    """run_pass() once, or every 2 s with watch; a Jev failure retries the pending blocks 30 s later."""
+    if not os.path.isdir(data_dir):
+        sys.exit(f"no session at {data_dir}")
+    try:
+        while True:
+            try:
+                run_pass()
+                wait = 2
+            except JevError as e:
+                if not watch:
+                    sys.exit(f"Jev failed: {e}")
+                log(f"Jev failed, will retry the pending blocks later: {e}")
+                wait = 30
+            if not watch:
+                return
+            time.sleep(wait)
+    except KeyboardInterrupt:
+        pass
+
+
+def main():
+    args = parse_args(__doc__, "score the reference examples and exit")
+    client = connect(f"rubric v{RUBRIC_VERSION}")
 
     if args.check:
         for state in check_states():
@@ -272,24 +313,8 @@ def main():
             print(f"{result['percentage']:5.1f}%  {state['target_block']}{context}")
         return
 
-    if not os.path.isdir(args.data_dir):
-        sys.exit(f"no session at {args.data_dir}")
     scores = Scores(args.data_dir)
-    try:
-        while True:
-            try:
-                score_pending(args.data_dir, client, scores)
-                wait = 2
-            except JevError as e:
-                if not args.watch:
-                    sys.exit(f"Jev failed: {e}")
-                log(f"Jev failed, will retry the pending blocks later: {e}")
-                wait = 30
-            if not args.watch:
-                return
-            time.sleep(wait)
-    except KeyboardInterrupt:
-        pass
+    run(args.data_dir, args.watch, lambda: score_pending(args.data_dir, client, scores))
 
 
 if __name__ == "__main__":

@@ -148,6 +148,20 @@ async function main() {
   run('checkability = {}');
   assert.ok(!run('buildBlock(blocks[0], "1", "")').children[0].children.some(x => x?.className?.startsWith("chk")));
   console.log("UI checkability badge checks passed.");
+  const themeBadgeOf = () => run('buildBlock(blocks[0], "1", "")').children[0].children.find(x => x?.className?.startsWith("theme"));
+  run(`themes = {a: {theme: "Saúde, educação e políticas sociais", family: "Economia e políticas sociais", method: "jev_direct",
+    model: "jev-1.13.0", theme_rubric_version: 1, stale: false,
+    probabilities: {"Economia e finanças públicas": 0.1, "Saúde, educação e políticas sociais": 0.8, "Sem tema": 0.1}}}`);
+  assert.equal(themeBadgeOf().textContent, "Saúde/Educação");
+  assert.equal(themeBadgeOf().className, "theme theme-social");
+  assert.match(themeBadgeOf().title, /Saúde, educação e políticas sociais 80% · Economia e finanças públicas 10%/);
+  run('themes.a.probabilities = {"Economia e finanças públicas": 0.45, "Saúde, educação e políticas sociais": 0.5, "Sem tema": 0.05}');
+  assert.equal(themeBadgeOf().textContent, "Saúde/Educação ?");
+  run('Object.assign(themes.a, {theme: "Sem tema", family: null, stale: true})');
+  assert.equal(themeBadgeOf().className, "theme theme-none stale");
+  run('themes = {}');
+  assert.equal(themeBadgeOf(), undefined);
+  console.log("UI theme badge checks passed.");
   await aiSendChecks();
   console.log("UI timestamp, send locks, retry, AI processing, row/source links and safe URL checks passed.");
 }
