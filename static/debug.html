@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inspeção da IA · Debate</title>
+  <link rel="stylesheet" href="/debug.css">
+  <script src="/debug.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div><a class="back" href="/">Transcrição do debate</a><h1>Inspeção da IA</h1></div>
+    <div class="connection"><span id="connectionDot" class="connection-dot"></span><span id="connection" role="status">Conectando…</span><button id="refresh">Atualizar</button></div>
+  </header>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <div class="workspace">
+    <aside class="run-sidebar" aria-label="Histórico de análises">
+      <div class="sidebar-heading"><h2>Execuções</h2><span id="runCount"></span></div>
+      <label class="sr-only" for="searchRuns">Buscar execução</label>
+      <input id="searchRuns" type="search" placeholder="Buscar bloco, falante ou texto">
+      <label class="sr-only" for="filterRuns">Filtrar execuções</label>
+      <select id="filterRuns"><option value="all">Todas as execuções</option><option value="PROCESSING">Em andamento</option><option value="errors">Com falha ou interrupção</option><option value="withheld">Veredicto retido</option><option value="no_match">Sem correspondência</option></select>
+      <div id="runs" class="run-list"></div>
+      <p id="historyLimit" class="hint"></p>
+    </aside>
+    <main id="main">
+      <section id="welcome" class="welcome"><div class="empty-symbol" aria-hidden="true">↳</div><h2>Acompanhe uma análise por dentro</h2><p>Selecione uma execução para ver o que o modelo recebeu, o que respondeu e quais regras foram aplicadas.</p><p>Para começar, use <strong>Analisar com IA</strong> em um bloco finalizado na <a href="/">transcrição</a>.</p></section>
+      <div id="runView" hidden>
+        <section class="run-heading">
+          <div class="title-row"><h2 id="runTitle"></h2><span id="runStatus" class="badge"></span></div>
+          <p id="runMeta" class="hint"></p>
+          <div class="actions"><a id="exportRun" class="button primary" download>Exportar auditoria JSON</a><a id="exportFull" class="button" download>JSON com base completa</a><button id="copyPrompt">Copiar instrução de revisão</button></div>
+          <p class="hint">O JSON inclui transcrição, células e respostas do modelo. Documentos externos não foram abertos.</p>
+          <p id="runWarning" class="warning" hidden></p>
+        </section>
+        <section class="transcript-section"><div class="section-heading"><h3>Texto analisado</h3><span id="speaker" class="hint"></span></div><blockquote id="transcript"></blockquote></section>
+        <section class="timeline-section"><div class="section-heading"><h3>Etapas da análise</h3><span id="progress" class="hint" aria-live="polite"></span></div><div id="timeline" class="timeline"></div></section>
+        <section class="claims-section"><div class="section-heading"><h3>Afirmações e evidências</h3><span class="hint">Pontuação de busca ≠ probabilidade</span></div><div id="claims"></div></section>
+        <section class="compare-section"><div class="section-heading"><h3>Comparar execuções</h3></div><div class="compare-controls"><label class="sr-only" for="compareRun">Execução para comparar</label><select id="compareRun"><option value="">Selecione outra execução</option></select><button id="compare">Comparar</button></div><div id="comparison"></div></section>
+        <section class="review-section"><h3>Sua revisão</h3><p class="hint">Anotações locais ficam separadas do registro original.</p><label for="reviewAssessment">Avaliação</label><select id="reviewAssessment"><option value="unreviewed">Ainda não revisado</option><option value="looks_correct">Parece correto</option><option value="needs_investigation">Precisa de investigação</option><option value="error_found">Erro identificado</option></select><label for="reviewNotes">Anotações</label><textarea id="reviewNotes" rows="4" maxlength="8000" placeholder="Registre o problema, o trecho e o que precisa ser conferido."></textarea><div class="actions"><button id="saveReview">Salvar revisão</button><span id="reviewSaved" class="hint" role="status"></span></div></section>
+      </div>
+    </main>
+    <aside class="inspector" aria-label="Detalhes da etapa">
+      <div class="inspector-heading"><h2>Detalhes da etapa</h2><p id="inspectorTitle" class="hint">Selecione uma etapa da análise.</p></div>
+      <div class="inspector-tabs" role="group" aria-label="Conteúdo da etapa"><button data-tab="overview" aria-pressed="true">Resumo</button><button data-tab="input" aria-pressed="false">Entrada</button><button data-tab="output" aria-pressed="false">Saída</button><button data-tab="rules" aria-pressed="false">Regras</button></div>
+      <div id="inspectorContent" class="inspector-content"><p class="hint">As decisões do modelo e as verificações de Python aparecem separadamente.</p></div>
+    </aside>
+  </div>
+</body>
+</html>

@@ -48,7 +48,7 @@
            border-radius: 6px; padding: .5rem .8rem .6rem; margin-bottom: .5rem; cursor: pointer; }
   .block.l1 { border-left-color: var(--lula); }
   .block.l2 { border-left-color: var(--flavio); }
-  .block.lM { opacity: .45; }
+  .block.lM, .block.locked { opacity: .45; }
   .block.target { outline: 2px solid var(--target); outline-offset: 1px; }
   .meta { display: flex; align-items: center; gap: .7rem; font-size: .78rem; color: var(--muted); }
   .time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
@@ -78,6 +78,11 @@
   .chk-mid { background: #fff4d6; color: #7a5a00; }
   .chk-high { background: var(--ok); color: #fff; }
   .chk.stale { opacity: .45; }
+  .theme { font-size: .7rem; font-weight: 600; border-radius: 4px; padding: 0 .4em; }
+  .theme-social { background: #efe6fb; color: #5b2c91; }
+  .theme-institutions { background: #dff1ef; color: #00695c; }
+  .theme-none { border: 1px solid var(--line); color: var(--muted); font-weight: 400; }
+  .theme.stale { opacity: .45; }
   .edited-tag { font-size: .7rem; font-style: italic; color: var(--muted); }
   .editor textarea { width: 100%; min-height: 4.5em; font: inherit; font-size: 1.05rem; line-height: 1.5;
                      padding: .35rem .5rem; border: 2px solid var(--target); border-radius: 6px; resize: vertical; }
@@ -85,6 +90,20 @@
   .editor .row .tip { font-size: .72rem; color: var(--muted); margin-left: auto; }
   .editor .save { background: var(--ink); color: #fff; border-color: var(--ink); }
   .err { font-size: .75rem; color: var(--muted); margin-top: .2rem; overflow-wrap: anywhere; }
+  .ai-results { margin-top: .7rem; padding-top: .5rem; border-top: 1px solid var(--line); font-size: .85rem; cursor: default; overflow-wrap: anywhere; }
+  .ai-results p { margin: .35rem 0; white-space: pre-wrap; }
+  .ai-results article { margin-top: .6rem; padding: .5rem; background: var(--bg); border-radius: 5px; }
+  .ai-results a { display: inline-block; margin: .2rem .8rem .2rem 0; color: var(--flavio); }
+  .ai-results summary { cursor: pointer; }
+  .ai-results > summary { font-weight: 600; }
+  .ai-preview { margin: .5rem 0; white-space: pre-wrap; }
+  .ai-preview a { display: inline; margin: 0; }
+  #aiControls { padding: .4rem 1rem; font-size: .8rem; border-top: 1px solid var(--line); }
+  #aiBypassWarning { margin-left: .7rem; color: var(--alarm); font-weight: 600; }
+  dialog { max-width: 31rem; padding: 1.2rem; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--panel); }
+  dialog::backdrop { background: #0006; }
+  dialog h2 { margin: 0; font-size: 1.1rem; }
+  dialog .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
   #jump { position: fixed; bottom: 1.2rem; left: 50%; transform: translateX(-50%); display: none;
           font-size: .9rem; padding: .5rem 1.1rem; background: var(--ink); color: #fff; border: 0; border-radius: 999px;
           box-shadow: 0 2px 8px rgba(0,0,0,.25); }
@@ -108,6 +127,7 @@
   <div id="toolbar">
     <input id="search" type="search" placeholder="Filtrar blocos…" autocomplete="off">
     <button id="copyAll">Copiar Lula + Flávio</button>
+    <a href="/debug" target="_blank" rel="noopener">Inspecionar IA</a>
     <span class="keys"><kbd>1</kbd> Lula · <kbd>2</kbd> Flávio · <kbd>M</kbd> mediador · <kbd>0</kbd> limpar · <kbd>S</kbd> enviar · <kbd>E</kbd> editar ·
       <kbd>↑</kbd><kbd>↓</kbd> navegar · <kbd>Esc</kbd> mais recente</span>
   </div>
@@ -116,11 +136,27 @@
     <label>Data <input id="debateDate" type="date"></label>
     <label><input id="showMinutage" type="checkbox"> Mostrar minutagem</label>
   </div>
+  <div id="aiControls" hidden>
+    <label><input id="allowWithoutAI" type="checkbox" autocomplete="off"> Permitir envio sem IA</label>
+    <span id="aiBypassWarning" hidden>Envios sem análise disponível serão feitos com a coluna F vazia.</span>
+  </div>
 </header>
 <main id="blocks"><div class="empty" id="empty">Nenhum bloco ainda. Aguardando o gravador…</div></main>
 <button id="jump">Ir para o mais recente ↓</button>
 
 <div id="toast"></div>
+<dialog id="aiSendConfirm" aria-labelledby="aiSendTitle" aria-describedby="aiSendReason">
+  <form method="dialog">
+    <h2 id="aiSendTitle">Enviar sem avaliação da IA?</h2>
+    <p id="aiSendReason"></p>
+    <p>A coluna F ficará vazia. Se a análise terminar antes do envio, o resultado atualizado será incluído.</p>
+    <div class="actions">
+      <button value="cancel" autofocus>Cancelar</button>
+      <button id="aiConfirmAnalyze" value="analyze">Analisar primeiro</button>
+      <button value="send">Enviar sem IA</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 "use strict";
@@ -129,6 +165,17 @@ const POLL_MS = 2000;
 // Checkability bands, in percent (CHECKABILITY.md); the backend applies no threshold.
 const CHECK_MID = 25;
 const CHECK_HIGH = 60;
+// Themes (THEMES.md): short badge text, and the gap between the top two
+// probabilities below which the badge asks "?". The backend applies no threshold.
+const THEME_SHORT = {
+  "Economia e finanças públicas": "Economia",
+  "Saúde, educação e políticas sociais": "Saúde/Educação",
+  "Democracia, Justiça e segurança": "Democracia/Justiça",
+  "Meio ambiente, infraestrutura e internacional": "Meio ambiente/Intl.",
+  "Sem tema": "Sem tema",
+};
+const THEME_FAMILY_CLASS = { "Economia e políticas sociais": "social", "Instituições e outras temáticas": "institutions" };
+const THEME_CLOSE = 0.15;
 const STALE_SECONDS = 60;
 
 const $ = (sel) => document.querySelector(sel);
@@ -143,6 +190,7 @@ let stateRequest = 0;
 let appliedStateRequest = 0;
 let labels = {};
 let checkability = {};        // block id -> {percentage, method, model, rubric_version, stale}
+let themes = {};              // block id -> {theme, family, probabilities, confidence, method, model, theme_rubric_version, stale}
 let platform = null;
 let extraDestinations = [];  // destinations that also receive every send; status bar only
 let sendByBlock = new Map();  // block id -> outbox item covering it
@@ -150,6 +198,11 @@ const sendPending = new Set(); // disable immediately, before the POST finishes
 const sendUnconfirmed = new Set(); // POST and subsequent state check both lost
 const labelPending = new Set();
 let editingId = null;         // block open in the text editor
+let aiEnabled = false;
+const aiJobs = new Map(); // per-block immutable input snapshots and analysis results
+const aiExpanded = new Map();
+let allowWithoutAI = false; // deliberately resets on reload
+let aiConfirmOpen = false;
 const SEND_TEXT = { waiting: "envia quando finalizar", queued: "na fila", sending: "enviando…", verifying: "verificando envio…", error: "tentando de novo", auth: "precisa de login", sent: "enviado", skipped: "já estava lá", failed: "falha no envio" };
 const WS_TEXT = { starting: "iniciando", connecting: "conectando", connected: "conectado", reconnecting: "reconectando",
   rotating: "renovando sessão", finishing: "finalizando", closed: "encerrado" };
@@ -290,7 +343,7 @@ function updateJump() {
 // --- rendering ----------------------------------------------------------------
 function buildBlock(b, label, suggestion) {
   const el = document.createElement("div");
-  el.className = `block ${b.status}` + (label ? ` l${label}` : "") + (b.final === false ? " live" : "");
+  el.className = `block ${b.status}` + (label ? ` l${label}` : "") + (b.final === false ? " live" : "") + (isLocked(b.id) ? " locked" : "");
   if (suggestion) el.classList.add(`suggest-${suggestion}`);
   el.dataset.id = b.id;
 
@@ -305,6 +358,8 @@ function buildBlock(b, label, suggestion) {
   meta.append(time, spk);
   const score = checkability[b.id];
   if (score) meta.append(checkBadge(score));
+  const theme = themes[b.id];
+  if (theme) meta.append(themeBadge(theme));
   if (b.merged) {
     const tag = document.createElement("span");
     tag.textContent = `${b.source_ids.length} blocos combinados`;
@@ -392,8 +447,17 @@ function buildBlock(b, label, suggestion) {
       copyText(lineFor(b)).then(() => toast("Bloco copiado"));
     });
     meta.append(copy);
+    if (b.final !== false && b.status === "ok") {
+      const analyze = document.createElement("button");
+      analyze.textContent = aiJobs.get(b.id)?.status === "PROCESSING" ? "Analisando…" : "Analisar com IA";
+      analyze.disabled = !aiEnabled || aiJobs.get(b.id)?.status === "PROCESSING" || (isSheets() && isLocked(b.id));
+      analyze.title = aiEnabled ? "Buscar evidências para revisão humana" : "Habilite AI_EVIDENCE_ENABLED em .env e reinicie o servidor";
+      analyze.addEventListener("click", ev => { ev.stopPropagation(); analyzeBlock(b.id); });
+      meta.append(analyze);
+    }
   }
   el.append(meta, text);
+  if (aiJobs.has(b.id) || sendByBlock.get(b.id)?.ai_cell) el.append(buildEvidence(b));
   return el;
 }
 
@@ -409,6 +473,157 @@ function checkBadge(score) {
   badge.title = `Checabilidade ${score.percentage}% (${how[score.method] || score.method}; ${score.model}, rubrica v${score.rubric_version})` +
     (score.model === "jev-mock" ? " — nota simulada, sem valor real" : "") +
     (score.stale ? " — texto mudou, aguardando nova nota" : "");
+  return badge;
+}
+
+function aiParagraph(parent, text) {
+  const p = document.createElement("p");
+  p.textContent = text;
+  parent.append(p);
+}
+
+function evidenceLink(parent, url, label) {
+  // Even server-generated URLs receive a browser-side scheme check.
+  if (!/^https?:\/\//i.test(url || "")) return;
+  const a = document.createElement("a");
+  a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+  a.textContent = label;
+  a.addEventListener("click", ev => ev.stopPropagation());
+  parent.append(a);
+}
+
+function usableAI(b) {
+  const job = aiJobs.get(b.id);
+  return !!(job?.job_id && job.status === "COMPLETED" && job.delivery_preview &&
+    job.inputText === b.text && job.inputSpeaker === (NAMES[labels[b.id]] || ""));
+}
+
+function aiUnavailableReason(b) {
+  const job = aiJobs.get(b.id);
+  if (!job) return "Este bloco ainda não foi analisado.";
+  if (job.status === "PROCESSING") return "A análise ainda está em andamento. Aguarde a conclusão ou envie sem IA.";
+  if (job.inputText !== b.text || job.inputSpeaker !== (NAMES[labels[b.id]] || ""))
+    return "O texto ou o falante mudou após a análise. Atualize a análise antes de incluí-la.";
+  return "A análise falhou ou está incompleta. Tente analisar novamente ou envie sem IA.";
+}
+
+function appendAIPreview(parent, cell) {
+  const text = cell.userEnteredValue.stringValue;
+  const runs = cell.textFormatRuns || [{startIndex: 0, format: {}}];
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    const part = document.createElement(run.format.bold ? "strong" : "span");
+    part.textContent = text.slice(run.startIndex, runs[i + 1]?.startIndex ?? text.length);
+    const url = run.format.link?.uri;
+    if (/^https?:\/\//i.test(url || "")) {
+      const a = document.createElement("a");
+      a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.append(part);
+      parent.append(a);
+    } else parent.append(part);
+  }
+}
+
+function buildEvidence(b) {
+  const box = document.createElement("details");
+  box.className = "ai-results";
+  box.open = aiExpanded.get(b.id) || false;
+  box.addEventListener("toggle", () => aiExpanded.set(b.id, box.open));
+  box.addEventListener("click", ev => ev.stopPropagation());
+  box.addEventListener("dblclick", ev => ev.stopPropagation());
+  const job = aiJobs.get(b.id) || {};
+  const sent = sendByBlock.get(b.id);
+  const frozen = isSheets() && sent && sent.status !== "failed" && !sendPending.has(b.id);
+  const previewCell = frozen ? sent.ai_cell : usableAI(b) ? job.delivery_preview : null;
+  const summary = document.createElement("summary");
+  summary.textContent = `Avaliação da IA · ${frozen ? "coluna F do envio" : previewCell ? "prévia da coluna F" : job.status === "PROCESSING" ? "analisando…" : "indisponível para envio"}`;
+  box.append(summary);
+  if (previewCell) {
+    const preview = document.createElement("div");
+    preview.className = "ai-preview";
+    appendAIPreview(preview, previewCell);
+    box.append(preview);
+  } else aiParagraph(box, frozen ? "Enviado sem avaliação da IA; coluna F vazia." : aiUnavailableReason(b));
+  const inspectId = frozen ? sent.ai_job_ids?.[0] || job.job_id : job.job_id;
+  if (inspectId) {
+    const inspect = document.createElement("a");
+    inspect.href = `/debug?run=${encodeURIComponent(inspectId)}`;
+    inspect.textContent = "Inspecionar análise completa";
+    inspect.target = "_blank"; inspect.rel = "noopener noreferrer";
+    box.append(inspect);
+  }
+  const refresh = document.createElement("button");
+  refresh.textContent = "Atualizar base e reanalisar";
+  refresh.disabled = !aiEnabled || job.status === "PROCESSING" || frozen;
+  refresh.addEventListener("click", ev => { ev.stopPropagation(); analyzeBlock(b.id, true); });
+  box.append(refresh);
+  return box;
+}
+
+function confirmWithoutAI(b) {
+  const dialog = $("#aiSendConfirm");
+  $("#aiSendReason").textContent = aiUnavailableReason(b);
+  $("#aiConfirmAnalyze").disabled = aiJobs.get(b.id)?.status === "PROCESSING";
+  aiConfirmOpen = true;
+  dialog.returnValue = "cancel";
+  return new Promise(resolve => {
+    dialog.addEventListener("close", () => {
+      aiConfirmOpen = false;
+      resolve(dialog.returnValue || "cancel");
+    }, {once: true});
+    dialog.showModal();
+  });
+}
+
+async function analyzeBlock(id, refresh = false) {
+  const b = blocks.find(x => x.id === id);
+  if (!aiEnabled || !b || b.final === false || aiJobs.get(id)?.status === "PROCESSING") return;
+  const job = {status: "PROCESSING", inputText: b.text, inputSpeaker: NAMES[labels[id]] || ""};
+  aiJobs.set(id, job);
+  render();
+  try {
+    const submitted = await postAction("ai-evidence", {id, refresh});
+    job.job_id = submitted.job_id;
+  } catch (error) {
+    job.status = "ERROR"; job.error = error.message;
+    render(); return;
+  }
+  let failures = 0;
+  while (job.status === "PROCESSING") {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const response = await fetch(`/api/ai-evidence/${job.job_id}`, {cache: "no-store"});
+      if (!response.ok) throw new Error("Não foi possível consultar a análise.");
+      const snapshot = await response.json();
+      Object.assign(job, snapshot);
+      job.inputText = snapshot.input.transcription;
+      job.inputSpeaker = snapshot.input.speaker;
+      failures = 0;
+    } catch (error) {
+      if (++failures >= 5) { job.status = "ERROR"; job.error = `${error.message} Tente novamente.`; }
+    }
+  }
+  render();
+}
+
+// The two most likely themes, most likely first: [[name, probability], ...].
+function topThemes(theme) {
+  return Object.entries(theme.probabilities || {}).sort((x, y) => y[1] - x[1]).slice(0, 2);
+}
+
+function themeBadge(theme) {
+  const badge = document.createElement("span");
+  badge.className = `theme theme-${THEME_FAMILY_CLASS[theme.family] || "none"}` + (theme.stale ? " stale" : "");
+  const top = topThemes(theme);
+  const close = top.length === 2 && top[0][1] - top[1][1] < THEME_CLOSE;
+  badge.textContent = (THEME_SHORT[theme.theme] || theme.theme) + (close ? " ?" : "");
+  const how = { jev_direct: "Jev", inherited_from_sources: "mesmo tema dos blocos combinados", jev_rerun: "Jev, bloco combinado" };
+  const odds = top.map(([name, p]) => `${name} ${Math.round(p * 100)}%`).join(" · ");
+  badge.title = `Tema sugerido: ${theme.theme}${theme.family ? ` (${theme.family})` : ""}\n${odds}\n` +
+    `${how[theme.method] || theme.method}; ${theme.model}, rubrica de temas v${theme.theme_rubric_version}` +
+    (close ? " — dois temas próximos, confira" : "") +
+    (theme.model === "jev-mock" ? " — tema simulado, sem valor real" : "") +
+    (theme.stale ? " — texto mudou, aguardando novo tema" : "");
   return badge;
 }
 
@@ -435,9 +650,9 @@ function render() {
     }
     const sent = sendByBlock.get(b.id);
     const sig = JSON.stringify([b.status, b.text, b.error, label, b.final, b.speaker_hint, suggestion, b.edited, b.id === editingId,
-      sent?.status, sent?.error, !!platform?.configured, platform?.target, settings, b.merged_edited, b.source_ids,
+      sent?.status, sent?.error, sent?.ai_cell, !!platform?.configured, platform?.target, settings, b.merged_edited, b.source_ids,
       isLocked(b.id), sendPending.has(b.id), sendUnconfirmed.has(b.id), labelPending.has(b.id), neighbour(b.id, 1)?.id, neighbour(b.id, 1)?.final,
-      isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id], checkability[b.id]]);
+      isLocked(neighbour(b.id, 1)?.id), labels[neighbour(b.id, 1)?.id], checkability[b.id], themes[b.id], aiEnabled, aiJobs.get(b.id)]);
     const cur = rendered.get(b.id);
     if (!cur) {
       const el = buildBlock(b, label, suggestion);
@@ -525,8 +740,12 @@ async function refreshState() {
     blocks = data.blocks;
     labels = data.labels;
     checkability = data.checkability || {};
+    themes = data.themes || {};
     platform = data.platform;
     extraDestinations = data.extra_destinations || [];
+    aiEnabled = !!data.ai_evidence?.enabled;
+    $("#aiControls").hidden = !aiEnabled;
+    $("#aiBypassWarning").hidden = !aiEnabled || !allowWithoutAI;
     if (!settingsPending) settings = data.settings || {};
     sessionStart = data.session_start;
     renderSettings();
@@ -587,23 +806,36 @@ function renderDestination(dest, suffix, always) {
 async function sendBlock(id) {
   const b = blocks.find((x) => x.id === id);
   const label = labels[id];
+  if (aiConfirmOpen) return;
   if (editingId || labelPending.has(id)) return toast("Salve a edição e aguarde o rótulo antes de enviar");
   if (b?.final === false) return toast("Espere o bloco finalizar para enviar");
   if (!b || !(label === "1" || label === "2")) return toast("Rotule o bloco com 1 (Lula) ou 2 (Flávio) antes");
   const prev = sendByBlock.get(id);
   if (alreadySent(b, label)) return toast("Bloco em envio ou já enviado");
+  let confirmedWithoutAI = false;
+  if (aiEnabled && !usableAI(b) && !allowWithoutAI) {
+    const choice = await confirmWithoutAI(b);
+    if (choice === "analyze") { analyzeBlock(id, true); return; }
+    if (choice !== "send") return;
+    confirmedWithoutAI = true;
+  }
+  // Polls and inference can finish while the modal is open. Always include the
+  // latest selected job; the server validates its frozen input before export.
+  const jobId = aiJobs.get(id)?.job_id;
   sendPending.add(id);
   render();
   try {
     const res = await fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ blockIds: [id] }),
+      body: JSON.stringify({ blockIds: [id], aiJobIds: jobId ? {[id]: jobId} : {},
+        allowWithoutAI: allowWithoutAI || confirmedWithoutAI }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.status);
     stateRevision++;
-    sendByBlock.set(id, { status: data.status, label, blockIds: [id], text: data.status === "waiting" ? null : b.text });
+    sendByBlock.set(id, { status: data.status, label, blockIds: [id], text: data.status === "waiting" ? null : b.text,
+      ai_cell: data.ai_cell });
     render();
     toast(data.status === "waiting" ? `${NAMES[label]}: envia quando finalizar` :
       prev ? `Reenviado como ${NAMES[label]}` : `Na fila: ${NAMES[label]}`);
@@ -761,6 +993,7 @@ function moveSelection(delta) {
 }
 
 document.addEventListener("keydown", (ev) => {
+  if (aiConfirmOpen || ev.target.closest("#aiControls, .ai-results")) return;
   if (ev.target.closest("#timeControls")) return;
   if (ev.target === $("#search")) {
     if (ev.key === "Escape") { ev.target.value = ""; ev.target.blur(); render(); }
@@ -815,6 +1048,11 @@ $("#copyAll").addEventListener("click", () => {
 });
 
 $("#search").addEventListener("input", render);
+$("#allowWithoutAI").checked = false;
+$("#allowWithoutAI").addEventListener("change", ev => {
+  allowWithoutAI = ev.target.checked;
+  $("#aiBypassWarning").hidden = !allowWithoutAI;
+});
 for (const id of ["#debateDate", "#debateStart", "#showMinutage"]) $(id).addEventListener("change", saveSettings);
 $("#jump").addEventListener("click", scrollToLatest);
 window.addEventListener("scroll", () => {

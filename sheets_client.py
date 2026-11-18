@@ -13,8 +13,10 @@ from datetime import datetime
 from platform_client import load_dotenv, now_iso
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-HEADERS = ["Início", "Fim", "Etiqueta", "Transcrição", "Checabilidade", "Status", "Colaborador"]
-HEADER_RANGE = "A6:G6"
+HEADERS = ["Início", "Fim", "Candidato", "Transcrição", "Checabilidade", "Avaliação da IA", "Tema", "Status",
+           "Colaborador"]
+HEADER_ALIASES = {2: {"Etiqueta"}, 5: {"Avaiação da IA"}}
+HEADER_RANGE = "A6:I6"
 NAMES = {"1": "Lula", "2": "Flávio"}
 RECEIPT_KEY = "ldt"
 LOCKED_STATUSES = {"queued", "sending", "verifying", "sent"}
@@ -31,10 +33,11 @@ class Config:
                                          ("GOOGLE_APPLICATION_CREDENTIALS", self.credentials_path)) if not value]
 
 
-def transcript_row(label, blocks, settings, checkability=""):
+def transcript_row(label, blocks, settings, checkability="", ai_summary="", theme=""):
     """Sheet timestamps are always elapsed from debate start, independent of UI display.
 
     checkability: the block's Jev score as an integer percentage, or "" when none is ready.
+    theme: the block's Jev theme name, or "" when none is ready.
     """
     if not settings.get("debate_start"):
         raise ValueError("configure o início do debate antes de enviar à planilha")
@@ -52,12 +55,16 @@ def transcript_row(label, blocks, settings, checkability=""):
     if first.tzinfo is None or not isinstance(end_ms, (int, float)):
         raise ValueError("o bloco não tem horários completos de início e fim")
     return [elapsed(first.timestamp()), elapsed(end_ms / 1000), NAMES[label],
-            " ".join(b["text"].strip() for b in blocks), checkability, "Novo"]
+            " ".join(b["text"].strip() for b in blocks), checkability, ai_summary, theme, "Novo"]
 
 
 def sheet_row(row):
-    """Snapshots queued before the Checabilidade column (A:E) get an empty E, so Status stays in F."""
-    return row[:4] + [""] + row[4:] if len(row) == 5 else row
+    """Migrate old snapshots in memory: E is score, F is AI, G is theme, H is Status."""
+    if len(row) == 5:
+        row = row[:4] + [""] + row[4:]
+    if len(row) == 6:
+        row = row[:5] + [""] + row[5:]
+    return row[:6] + [""] + row[6:] if len(row) == 7 else row
 
 
 def cell(value):
@@ -101,8 +108,15 @@ class Client:
         quoted = "'" + self.cfg.tab.replace("'", "''") + "'"
         headers = api.values().get(spreadsheetId=self.cfg.spreadsheet_id,
                                    range=f"{quoted}!{HEADER_RANGE}").execute(num_retries=0).get("values", [])
-        if headers != [HEADERS]:
-            raise ValueError(f"os cabeçalhos {HEADER_RANGE} não correspondem ao modelo da transcrição")
+        actual = headers[0] if headers else []
+        mismatches = []
+        for index, expected in enumerate(HEADERS):
+            found = actual[index] if index < len(actual) else ""
+            if found not in {expected} | HEADER_ALIASES.get(index, set()):
+                mismatches.append(f"{chr(65 + index)}6: esperado {expected!r}, encontrado {found!r}")
+        if mismatches:
+            raise ValueError(f"os cabeçalhos {HEADER_RANGE} não correspondem ao modelo da transcrição: "
+                             + "; ".join(mismatches))
         return tab["sheetId"]
 
     def receipt(self, item):
@@ -129,10 +143,15 @@ class Client:
         if item["spreadsheetId"] != self.cfg.spreadsheet_id or item["tab"] != self.cfg.tab:
             raise ValueError("restaure a configuração da planilha deste envio antes de continuar")
         sheet_id = self.check()
+        values = [cell(v) for v in sheet_row(item["row"])]
+        fields = "userEnteredValue"
+        if item.get("ai_cell"):
+            values[5] = item["ai_cell"]
+            fields += ",textFormatRuns,userEnteredFormat.wrapStrategy"
         body = {"requests": [
             {"appendCells": {"sheetId": sheet_id,
-                             "rows": [{"values": [cell(v) for v in sheet_row(item["row"])]}],
-                             "fields": "userEnteredValue"}},
+                             "rows": [{"values": values}],
+                             "fields": fields}},
             {"createDeveloperMetadata": {"developerMetadata": {
                 "metadataId": item["metadataId"], "metadataKey": RECEIPT_KEY,
                 "metadataValue": item["externalId"], "visibility": "DOCUMENT",
@@ -190,7 +209,7 @@ class Outbox:
         with self.lock:
             return any(bid in i["blockIds"] and i["status"] in LOCKED_STATUSES for i in self.items.values())
 
-    def enqueue(self, label, blocks, settings, checkability=""):
+    def enqueue(self, label, blocks, settings, checkability="", ai_cell=None, ai_job_ids=None, theme=""):
         with self.lock:
             ids = [b["id"] for b in blocks]
             if any(set(ids).intersection(i["blockIds"]) and i["status"] in LOCKED_STATUSES
@@ -198,7 +217,10 @@ class Outbox:
                 raise ValueError("o bloco já está em envio ou foi enviado à planilha")
             item = {"externalId": uuid.uuid4().hex[:16], "metadataId": secrets.randbelow(2**31 - 1) + 1,
                     "spreadsheetId": self.cfg.spreadsheet_id, "tab": self.cfg.tab,
-                    "blockIds": ids, "label": label, "row": transcript_row(label, blocks, settings, checkability),
+                    "blockIds": ids, "label": label,
+                    "row": transcript_row(label, blocks, settings, checkability,
+                                          ai_cell["userEnteredValue"]["stringValue"] if ai_cell else "", theme),
+                    "ai_cell": ai_cell, "ai_job_ids": ai_job_ids or [],
                     "text": " ".join(b["text"].strip() for b in blocks),
                     "status": "queued", "uncertain": False, "attempts": 0, "next_try": 0,
                     "created_at": now_iso(), "error": None}

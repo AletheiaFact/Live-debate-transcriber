@@ -3,7 +3,8 @@
 
 Runs separately from recorder.py and only reads its files, except
 labels.json, edits.json, operator.json and send queues, which only this server writes.
-Checkability scores are read from checkability.jsonl, written by checkability.py.
+Checkability scores and theme suggestions are read from checkability.jsonl and
+themes.jsonl, written by checkability.py and themes.py.
 Text edits are kept apart from blocks.jsonl and applied on top of it.
 
 SEND_TARGET selects Google Sheets, the Aletheia platform, or both
@@ -20,6 +21,7 @@ import time
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import platform_client
 import sheets_client
@@ -37,6 +39,41 @@ def to_epoch(iso):
         return None
 
 
+class JsonlTail:
+    """Latest line per block id of a JSONL file another process appends to, read incrementally."""
+
+    def __init__(self, path):
+        self.path = path
+        self.offset = 0
+        self.items = {}
+
+    def read(self):
+        try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            size = 0
+        if size < self.offset:  # file was replaced: start over
+            self.offset, self.items = 0, {}
+        if size > self.offset:
+            with open(self.path, "rb") as f:
+                f.seek(self.offset)
+                for raw in f:
+                    if not raw.endswith(b"\n"):
+                        break  # the writer is mid-write; pick it up next poll
+                    self.offset += len(raw)
+                    try:
+                        item = json.loads(raw)
+                        self.items[item["block_id"]] = item
+                    except (ValueError, KeyError):
+                        continue
+        return self.items
+
+
+def is_stale(item, block):
+    """The block's text changed since Jev judged it, and the writer has not caught up yet."""
+    return (item.get("state") or {}).get("target_block") != " ".join(block.get("text", "").split())
+
+
 class Store:
     def __init__(self, data_dir):
         self.blocks_path = os.path.join(data_dir, "blocks.jsonl")
@@ -45,8 +82,9 @@ class Store:
         self.status_path = os.path.join(data_dir, "status.json")
         self.operator_path = os.path.join(data_dir, "operator.json")
         self.scores_path = os.path.join(data_dir, "checkability.jsonl")
-        self.scores_offset = 0
-        self.scores = {}
+        self.scores = JsonlTail(self.scores_path)
+        self.themes_path = os.path.join(data_dir, "themes.jsonl")
+        self.theme_log = JsonlTail(self.themes_path)
         self.operator = self._read_json(self.operator_path) or {"settings": {}, "groups": {}}
         self.lock = threading.Lock()
         self.offset = 0
@@ -96,32 +134,17 @@ class Store:
         stale: the block's text changed since it was scored and checkability.py
         has not rescored it yet.
         """
-        try:
-            size = os.path.getsize(self.scores_path)
-        except OSError:
-            size = 0
-        if size < self.scores_offset:  # file was replaced: start over
-            self.scores_offset, self.scores = 0, {}
-        if size > self.scores_offset:
-            with open(self.scores_path, "rb") as f:
-                f.seek(self.scores_offset)
-                for raw in f:
-                    if not raw.endswith(b"\n"):
-                        break  # checkability.py is mid-write; pick it up next poll
-                    self.scores_offset += len(raw)
-                    try:
-                        item = json.loads(raw)
-                        self.scores[item["block_id"]] = item
-                    except (ValueError, KeyError):
-                        continue
-        out = {}
-        for b in blocks:
-            item = self.scores.get(b["id"])
-            if item:
-                scored_text = (item.get("state") or {}).get("target_block")
-                out[b["id"]] = {k: item.get(k) for k in ("percentage", "method", "model", "rubric_version")}
-                out[b["id"]]["stale"] = scored_text != " ".join(b.get("text", "").split())
-        return out
+        scores = self.scores.read()
+        fields = ("percentage", "method", "model", "rubric_version")
+        return {b["id"]: {**{k: scores[b["id"]].get(k) for k in fields}, "stale": is_stale(scores[b["id"]], b)}
+                for b in blocks if b["id"] in scores}
+
+    def themes(self, blocks):
+        """Latest theme per current block, read incrementally from themes.jsonl; stale as in checkability()."""
+        themes = self.theme_log.read()
+        fields = ("theme", "family", "probabilities", "confidence", "method", "model", "theme_rubric_version")
+        return {b["id"]: {**{k: themes[b["id"]].get(k) for k in fields}, "stale": is_stale(themes[b["id"]], b)}
+                for b in blocks if b["id"] in themes}
 
     def current_blocks(self):
         """Blocks with the operator's text edits applied. Caller holds self.lock."""
@@ -244,6 +267,7 @@ class Store:
             labels = dict(self.labels)
             settings = dict(self.operator["settings"])
             checkability = self.checkability(blocks)
+            themes = self.themes(blocks)
         status = self._read_json(self.status_path) or {}
         heartbeat = to_epoch(status.get("heartbeat"))
         recorder_alive = heartbeat is not None and now - heartbeat < HEARTBEAT_STALE_SECONDS
@@ -258,6 +282,7 @@ class Store:
             "blocks": blocks,
             "labels": labels,
             "checkability": checkability,
+            "themes": themes,
             "settings": settings,
             "session_start": status.get("started_at") or (blocks[0]["start"] if blocks else None),
             "status": {
@@ -293,6 +318,7 @@ class Store:
 
 class Handler(BaseHTTPRequestHandler):
     store = None
+    evidence = None  # optional AI jobs; entirely separate from delivery outboxes
     outbox = None  # primary destination: drives block locks and per-block status in the UI
     extra_outboxes = []  # further destinations that receive every send too
 
@@ -307,11 +333,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(403)
         return False
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, filename=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -325,22 +353,45 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             with open(INDEX, "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
+        elif path in ("/debug", "/debug.js", "/debug.css"):
+            filename, ctype = {"/debug": ("debug.html", "text/html"),
+                               "/debug.js": ("debug.js", "text/javascript"),
+                               "/debug.css": ("debug.css", "text/css")}[path]
+            with open(os.path.join(HERE, "static", filename), "rb") as f:
+                self._send(200, f.read(), ctype + "; charset=utf-8")
+        elif path.startswith("/api/ai-debug"):
+            self._debug_get(path)
         elif path == "/api/state":
             state = self.store.state()
             state["platform"] = self.outbox.state()
             state["extra_destinations"] = [o.state() for o in self.extra_outboxes]
+            state["ai_evidence"] = {"enabled": bool(self.evidence and self.evidence.cfg.enabled)}
             self._json(200, state)
+        elif path.startswith("/api/ai-evidence/") and self.evidence:
+            job = self.evidence.get(path.rsplit("/", 1)[-1])
+            if job:
+                job.pop("audit", None)  # operator polling does not need the full audit payload
+                from ai_delivery import build_ai_cell, usable_job
+                source = job.get("input", {})
+                if usable_job(job, {"id": source.get("segment_id"), "text": source.get("transcription")},
+                              source.get("speaker")):
+                    job["delivery_preview"] = build_ai_cell([job["result"]])
+            self._json(200 if job else 404, job or {"error": "análise desconhecida"})
         else:
             self.send_error(404)
 
     def do_POST(self):
         if not self._host_ok():
             return
-        if self.path not in ("/api/label", "/api/send", "/api/edit", "/api/settings", "/api/merge", "/api/unmerge"):
+        if self.path.startswith("/api/ai-debug/") and self.path.endswith("/review"):
+            return self._debug_review()
+        if self.path not in ("/api/label", "/api/send", "/api/edit", "/api/settings", "/api/merge", "/api/unmerge", "/api/ai-evidence"):
             return self.send_error(404)
         length = int(self.headers.get("Content-Length") or 0)
         if length > 65536:
             return self.send_error(413)
+        if self.path == "/api/ai-evidence":
+            return self._analyze(length)
         if self.path in ("/api/settings", "/api/merge", "/api/unmerge"):
             try:
                 body = json.loads(self.rfile.read(length))
@@ -371,6 +422,81 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": str(e)})
         self._json(200, {"ok": True})
 
+    def _debug_get(self, path):
+        if not self.evidence:
+            return self._json(503, {"error": "Histórico da IA indisponível; verifique a configuração do servidor."})
+        try:
+            query = parse_qs(urlsplit(self.path).query)
+            if path == "/api/ai-debug":
+                data = self.evidence.history(int(query.get("limit", ["100"])[0]))
+                data["enabled"] = self.evidence.cfg.enabled
+            elif path == "/api/ai-debug/review-prompt":
+                from audit_trace import REVIEW_PROMPT
+                data = {"prompt": REVIEW_PROMPT}
+            else:
+                parts = path.split("/")
+                job_id = parts[3] if len(parts) >= 4 else ""
+                if len(parts) == 5 and parts[4] == "export":
+                    data = self.evidence.export(job_id, full=query.get("full") == ["1"])
+                    if data is not None:
+                        suffix = "-full" if query.get("full") == ["1"] else ""
+                        return self._send(200, json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                                          "application/json; charset=utf-8", filename=f"audit-{job_id}{suffix}.json")
+                elif len(parts) == 4:
+                    data = self.evidence.detail(job_id, after=max(0, int(query.get("after", ["0"])[0])))
+                    if data and self.store:
+                        with self.store.lock:
+                            current = next((b for b in self.store.current_blocks() if b["id"] == data["segment_id"]), None)
+                            speaker = {"1": "Lula", "2": "Flávio", "M": "Mediador"}.get(self.store.labels.get(data["segment_id"]), "")
+                            data["input_changed"] = bool(current["text"] != data["input"]["transcription"] or speaker != data["input"]["speaker"]) if current else None
+                else:
+                    data = None
+            self._json(200 if data is not None else 404, data if data is not None else {"error": "análise desconhecida"})
+        except (ValueError, TypeError):
+            self._json(400, {"error": "parâmetros de histórico inválidos"})
+
+    def _debug_review(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= 40000 or not self.evidence:
+                raise ValueError("anotação inválida")
+            parts = self.path.split("/")
+            if len(parts) != 5:
+                raise ValueError("rota inválida")
+            body = json.loads(self.rfile.read(length))
+            self._json(200, self.evidence.review(parts[3], body))
+        except (ValueError, TypeError, KeyError):
+            self._json(400, {"error": "anotação inválida; limite de 8000 caracteres"})
+        except OSError:
+            self._json(500, {"error": "não foi possível salvar a anotação local"})
+
+    def _analyze(self, length):
+        try:
+            if not self.evidence or not self.evidence.cfg.enabled:
+                return self._json(400, {"error": "habilite AI_EVIDENCE_ENABLED em .env"})
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError("esperado {id} ou {segment: {...}}")
+            if "id" in body:
+                # Snapshot the selected, edited/merged block under the store lock.
+                with self.store.lock:
+                    block = next((b for b in self.store.current_blocks() if b["id"] == body["id"]), None)
+                    if not block or not _is_final(block) or not block.get("text", "").strip():
+                        raise ValueError("selecione um bloco finalizado com texto")
+                    segment = {"segment_id": block["id"], "speaker": {"1": "Lula", "2": "Flávio", "M": "Mediador"}.get(self.store.labels.get(block["id"]), ""),
+                               "transcription": block["text"], "language": "pt-BR",
+                               "start_time": block.get("start_ms") / 1000 if block.get("start_ms") is not None else to_epoch(block.get("start")),
+                               "end_time": block.get("end_ms") / 1000 if block.get("end_ms") is not None else None}
+            else:
+                segment = body["segment"]
+            job = self.evidence.submit(segment, refresh=body.get("refresh") is True)
+            return self._json(202, job)
+        except ImportError:
+            return self._json(400, {"error": "instale requirements.txt para usar IA"})
+        except (ValueError, TypeError, KeyError):
+            # ValidationError can include the complete untrusted input; keep it private.
+            return self._json(400, {"error": "solicitação inválida ou limite de análises atingido; verifique o bloco e aguarde análises em andamento"})
+
     def _edit(self, length):
         """{"edits": {block id: text or null}}; several blocks at once for "move text"."""
         try:
@@ -392,10 +518,16 @@ class Handler(BaseHTTPRequestHandler):
         if missing:
             return self._json(400, {"error": "destino não configurado: " + ", ".join(missing)})
         try:
-            ids = json.loads(self.rfile.read(length))["blockIds"]
+            body = json.loads(self.rfile.read(length))
+            ids = body["blockIds"]
             if not isinstance(ids, list):
                 raise TypeError
             ids = [str(i) for i in ids]
+            ai_job_ids = body.get("aiJobIds", {})
+            if (not isinstance(ai_job_ids, dict) or any(k not in ids or not isinstance(v, str)
+                                                       for k, v in ai_job_ids.items())):
+                raise TypeError
+            without_ai = body.get("allowWithoutAI") is True
         except (ValueError, KeyError, TypeError):
             return self._json(400, {"error": "esperado {blockIds: [...]}"})
         # Snapshot validation and queue persistence share the edit lock, so an edit,
@@ -418,15 +550,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "o bloco não tem texto"})
             label = labels.pop()
             try:
+                from ai_delivery import build_ai_cell, usable_job
+                evidence = getattr(self, "evidence", None)
+                results, attached_ids = [], []
+                for block in blocks:
+                    job_id = ai_job_ids.get(block["id"])
+                    job = evidence.get(job_id) if evidence and job_id else None
+                    if usable_job(job, block, sheets_client.NAMES[label]):
+                        results.append(job["result"])
+                        attached_ids.append(job_id)
+                    elif evidence and evidence.cfg.enabled and not without_ai:
+                        return self._json(409, {"error": "Conclua ou atualize a análise, ou confirme o envio sem IA.",
+                                                "ai_required": True})
+                ai_cell = build_ai_cell(results) if results else None
                 # The primary goes first: if it rejects the block, nothing is queued anywhere.
                 settings = self.store.operator["settings"]
                 score = sheet_score(self.store.checkability(blocks), blocks)
-                item = enqueue(self.outbox, label, blocks, settings, score)
+                theme = sheet_theme(self.store.themes(blocks), blocks)
+                item = enqueue(self.outbox, label, blocks, settings, score, ai_cell, attached_ids, theme)
                 for outbox in self.extra_outboxes:
-                    enqueue(outbox, label, blocks, settings, score)
+                    enqueue(outbox, label, blocks, settings, score, ai_cell, attached_ids, theme)
             except ValueError as e:
                 return self._json(400, {"error": str(e)})
-        self._json(200, {"externalId": item["externalId"], "status": item["status"]})
+        self._json(200, {"externalId": item["externalId"], "status": item["status"],
+                         "ai_cell": item.get("ai_cell")})
 
 
 def sheet_score(scores, blocks):
@@ -440,11 +587,24 @@ def sheet_score(scores, blocks):
     return round(max(s["percentage"] for s in found))
 
 
-def enqueue(outbox, label, blocks, settings, score=""):
+def sheet_theme(themes, blocks):
+    """Theme name for the Sheets row, or "" unless every block has the same current, real theme.
+
+    Several blocks sent together have no best theme: a disagreement leaves the cell empty.
+    """
+    found = [themes.get(b["id"]) for b in blocks]
+    if any(t is None or t["stale"] or t["model"] == "jev-mock" for t in found):
+        return ""
+    names = {t["theme"] for t in found}
+    return names.pop() if len(names) == 1 else ""
+
+
+def enqueue(outbox, label, blocks, settings, score="", ai_cell=None, ai_job_ids=None, theme=""):
     if isinstance(outbox, sheets_client.Outbox):
-        return outbox.enqueue(label, blocks, settings, score)
+        return outbox.enqueue(label, blocks, settings, score, ai_cell, ai_job_ids, theme)
     # Platform ids are deterministic, so a resend of a queued or sent block is a no-op there.
-    return outbox.enqueue(label, blocks, waiting=False)
+    # The platform has no theme field yet, and its turn schema is strict, so the theme is not sent.
+    return outbox.enqueue(label, blocks, waiting=False, checkability=score if isinstance(score, int) else None)
 
 
 def _is_final(block):
@@ -474,6 +634,12 @@ def main():
     os.makedirs(args.data_dir, exist_ok=True)
     platform_client.load_dotenv()
     Handler.store = Store(args.data_dir)
+    from ai_evidence import Jobs
+    from ai_config import Config as EvidenceConfig
+    try:
+        Handler.evidence = Jobs(EvidenceConfig.from_env(), args.data_dir)
+    except ValueError:
+        print("IA desabilitada: configuração AI_EVIDENCE inválida", flush=True)
     store = Handler.store
     target = os.environ.get("SEND_TARGET") or ("sheets" if os.environ.get("SPREADSHEET_ID") else "platform")
     targets = [t.strip() for t in target.split(",") if t.strip()]

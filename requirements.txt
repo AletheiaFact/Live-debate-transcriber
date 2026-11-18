@@ -1,5 +1,7 @@
-# Only required for Google Sheets sending; recording and Aletheia use the standard library.
+# Optional Sheets and AI evidence dependencies; recording/Aletheia use the stdlib.
 google-api-python-client>=2.0,<3
 google-auth>=2.0,<3
 google-auth-httplib2>=0.2,<1
 httplib2>=0.22,<1
+openai>=1.50,<3
+pydantic>=2.8,<3

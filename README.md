@@ -51,8 +51,8 @@ is lost.
 - Optional, to send blocks to Aletheia: a platform that includes the debate
   transcript API (AletheiaFact/aletheia PR #2655) and a fact-checker account.
 
-`--device` capture uses macOS AVFoundation. `--url` and `--file` work anywhere
-ffmpeg runs.
+`--device` capture uses DirectShow on Windows and AVFoundation on macOS.
+`--url` and `--file` work anywhere ffmpeg runs.
 
 ## Setup
 
@@ -92,8 +92,146 @@ it.
 
 ## Running
 
-Use the same `--data-dir` in both terminals (the default is `data/live`). Use a
-new folder to start a clean session.
+Use the same `--data-dir` in every terminal (the default is `data/live`). Use a
+new folder to start a clean session. The core project uses two processes: the
+operator server and the recorder. Optional Jev scoring runs in a third terminal.
+AI evidence analysis and the debug dashboard run inside the operator server.
+
+### Windows quick start (PowerShell)
+
+Open PowerShell in the project root. These commands use the project's virtual
+environment directly; activating it is not required. With `uv` installed, prepare
+the environment once (or update dependencies after pulling changes):
+
+```powershell
+if (-not (Test-Path .venv\Scripts\python.exe)) { uv venv .venv }
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+ffmpeg -version
+```
+
+Install FFmpeg and add it to `PATH` if the last command is not found. Edit `.env`
+to configure `SONIOX_API_KEY` and the desired sending destination. For Sheets,
+set `GOOGLE_APPLICATION_CREDENTIALS`, `SPREADSHEET_ID` and `GOOGLE_SHEETS_TAB` as
+described in [Sending blocks to Google Sheets](#sending-blocks-to-google-sheets).
+For Aletheia, follow [Sending blocks to Aletheia](#sending-blocks-to-aletheia).
+
+To enable the **Analisar com IA** button using Ollama, configure these settings
+in `.env` alongside the existing transcription and sending settings:
+
+```dotenv
+AI_EVIDENCE_ENABLED=true
+AI_EVIDENCE_PROVIDER=ollama
+AI_EVIDENCE_OLLAMA_BASE_URL=http://192.168.0.180:11434/v1
+AI_EVIDENCE_OLLAMA_MODEL=qwen3.5:4b
+AI_EVIDENCE_OLLAMA_REASONING_EFFORT=none
+```
+
+Use your Ollama server's address and an installed model. That server must be
+running and reachable. Configure `AI_EVIDENCE_SPREADSHEET_ID` for the evidence
+workbook and grant the service account Viewer access. This is separate from the
+transcript destination's spreadsheet ID and Editor access. See
+[AI evidence setup](docs/ai_evidence.md) for provider options and full configuration.
+Check model availability and evidence-workbook access before starting:
+
+```powershell
+.\.venv\Scripts\python.exe ai_evidence.py --check
+```
+
+**Terminal 1 — operator page and debug dashboard:**
+
+```powershell
+.\.venv\Scripts\python.exe server.py --data-dir data/debate
+```
+
+Open the [operator page](http://127.0.0.1:8765/) and the
+[debug dashboard](http://127.0.0.1:8765/debug). Both are served on localhost.
+
+**Terminal 2 — recorder:** open another PowerShell terminal in the same project
+root and choose one input:
+
+```powershell
+# Recorded audio/video, played back in real time; replace the path with your file.
+.\.venv\Scripts\python.exe recorder.py --data-dir data/debate --file "C:\path\to\debate.mp4"
+
+# Or a direct stream URL that FFmpeg can read.
+.\.venv\Scripts\python.exe recorder.py --data-dir data/debate --url "https://example.com/stream.m3u8"
+```
+
+To capture a video playing in any browser or desktop app on Windows, use the
+audio-device setup below. No YouTube URL or direct stream URL is needed.
+For a rehearsal without Soniox, use a real local audio/video file with `--fake`:
+
+```powershell
+.\.venv\Scripts\python.exe recorder.py --data-dir data/debate --file "C:\path\to\debate.mp4" --fake
+```
+
+`--fake` replaces Soniox transcription with sample text. AI evidence analysis,
+Jev scoring and sending still use their configured services when invoked.
+
+**Terminal 3 — optional checkability scores:**
+
+```powershell
+.\.venv\Scripts\python.exe checkability.py --data-dir data/debate --watch
+```
+
+Set a real `TYPESAFE_API_KEY` in `.env` for meaningful scores. The example
+`your_typesafe_api_key_here` value produces mock scores; an empty key is an error.
+You can omit this process when you only need transcription and AI evidence analysis.
+
+When finalized blocks appear in the operator page, label/correct a block and click
+**Analisar com IA**. Click **Inspecionar análise** to follow its steps in the
+dashboard, inspect model input/output and export audit JSON. Analysis runs on
+request; merely opening the dashboard does not start inference. Full traces are
+available for new analyses; older saved results cannot recover missing steps.
+
+Stop each process with **Ctrl+C**. Restart the relevant processes after changing
+`.env`; restart `server.py` after updating the dashboard or analysis code. Run only
+one operator server per session directory.
+
+### Capture PC playback on Windows (any video platform)
+
+The recorder captures a Windows **recording device**. To feed it your browser's
+playback, install [VB-CABLE](https://vb-audio.com/Cable/) using its instructions
+(administrator installation and a restart are required).
+
+1. In Windows **Settings > System > Sound**, choose **CABLE Input (VB-Audio
+   Virtual Cable)** as the output device, then play the video. You can instead
+   select this output only for your browser in **Volume mixer**. Audio sent to
+   CABLE Input becomes available to recording apps through **CABLE Output**.
+2. To hear the video too, open **More sound settings > Recording**, select
+   **CABLE Output > Properties > Listen**, enable **Listen to this device**, and
+   choose your physical headphones/speakers as the playback device.
+3. List the recording-device names FFmpeg can see:
+
+   ```powershell
+   ffmpeg -hide_banner -list_devices true -f dshow -i dummy
+   ```
+
+   The listing command may end with an error about `dummy`; the device list is
+   the intended result. Copy the exact audio-device name from the list.
+4. Start the operator server and recorder in separate PowerShell terminals:
+
+   ```powershell
+   # Terminal 1
+   .\.venv\Scripts\python.exe server.py --data-dir data/pc-audio
+   ```
+
+   ```powershell
+   # Terminal 2; replace the device name if your listing differs.
+   .\.venv\Scripts\python.exe recorder.py --data-dir data/pc-audio --device "CABLE Output (VB-Audio Virtual Cable)"
+   ```
+
+   Open http://127.0.0.1:8765/ and play the video. Finalized transcription blocks
+   appear there, and audio is archived in `data/pc-audio/audio/`. Stop with
+   **Ctrl+C**. Restore your normal sound output when finished.
+
+If an enabled **Stereo Mix** recording device is available, you can use its
+exact listed name with `--device` instead of installing VB-CABLE. Its ability to
+capture playback depends on your sound driver and the output device in use.
+Selecting an ordinary microphone records the room rather than digital PC audio.
+
+### macOS and Linux
 
 **Terminal 1, operator page:**
 
@@ -185,6 +323,12 @@ one by default, or the block you clicked or moved to with ↑/↓.
   above 60%. A faded score means the text changed and a new score is pending.
   Hover for the method and model. Sending to Sheets writes the score in
   column E; it is not sent to the platform.
+- **Themes:** when `themes.py` is running, each block also shows the theme Jev
+  suggests: purple for economy and social policy, teal for institutions and
+  other subjects, an outline for *Sem tema*. A `?` means the two most likely
+  themes are close; hover to see both, the method and the model. A faded theme
+  means the text changed and a new theme is pending. Sending to Sheets writes
+  the theme in column G; it is not sent to the platform.
 - **Number highlights:** numbers, percentages, dates and amounts are highlighted,
   because those are the claims most worth checking.
 - **Editing:** when the start of one person's speech lands in the previous
@@ -201,6 +345,17 @@ one by default, or the block you clicked or moved to with ↑/↓.
   *Lacunas* counts transcription gaps.
 
 ## Sending blocks to Google Sheets
+
+Optional **Analisar com IA** retrieves evidence from a separate, read-only
+four-tab workbook. Its collapsible panel previews the formatted assessment that
+**Enviar** includes in column F. Full details remain in **Inspecionar IA**.
+See [AI evidence setup and API](docs/ai_evidence.md)
+for Ollama/OpenAI configuration, validation safeguards, and tests.
+
+Use **Inspecionar IA** in the toolbar (http://127.0.0.1:8765/debug) to inspect
+live analysis steps, exact model inputs and outputs, evidence rankings and reasons
+for withholding a verdict. Saved runs can be compared and exported as audit JSON
+for review in another AI. See [the audit dashboard guide](docs/ai_debug.md).
 
 Install the optional dependencies and configure `.env` (the recorder still needs
 `SONIOX_API_KEY`):
@@ -225,28 +380,59 @@ Run this read-only check before starting `server.py`:
 python sheets_client.py
 ```
 
-The tab must have the following headers in **A6:G6**. Each selected block becomes
+The tab must have the following headers in **A6:I6**. Each selected block becomes
 one row, starting at **row 7** when the template has no transcript data:
 
 | Column | Value sent |
 |---|---|
 | A — Início | Elapsed start, `HH:MM:SS` |
 | B — Fim | Elapsed end, `HH:MM:SS` |
-| C — Etiqueta | Operator's speaker label: Lula or Flávio |
+| C — Candidato | Operator's speaker label: Lula or Flávio |
 | D — Transcrição | Final text, including operator corrections and merges |
 | E — Checabilidade | Jev checkability score, `0`–`100` (a number), or empty when no current score is ready |
-| F — Status | `Novo` |
-| G — Colaborador | Left for reviewers |
+| F — Avaliação da IA | Formatted AI assessment: claims, suggested verdicts, selected record/source links and explanations; empty when explicitly sent without a usable analysis |
+| G — Tema | Jev theme suggestion, for example `Economia e finanças públicas` or `Sem tema`, or empty when no current theme is ready |
+| H — Status | `Novo` |
+| I — Colaborador | Left for reviewers |
 
-To add the Checabilidade column to an existing tab, right-click column E,
-choose **Insert 1 column left**, and type `Checabilidade` in E6. Existing rows,
-statuses and dropdowns move to F and G. `python sheets_client.py` confirms the
-headers. Rows queued before the update are sent with an empty E.
+Column E remains the numeric Jev score. To update an existing tab, add the
+missing columns in order, each with **Insert 1 column left**:
+
+- Without Checabilidade: insert at column E and type `Checabilidade` in E6.
+- Without the AI assessment: insert at column F and type `Avaliação da IA` in F6.
+- Without Tema: insert at column G and type `Tema` in G6.
+
+Existing rows, statuses and dropdowns move right with Status and Colaborador.
+The legacy names `Etiqueta` in C6 and `Avaiação da IA` in F6 are also accepted.
+Columns A:I must stay in the documented order; additional review columns after I
+are allowed. `python sheets_client.py` confirms the headers without writing, and
+sending is refused until they match; a validation error identifies the mismatched
+cells and their expected and actual headers. Older queued rows are migrated in
+memory with the new columns empty, so Status always lands in H.
+
+The collapsed **Avaliação da IA** panel shows the same text, bold labels and
+clickable links as column F. It selects up to three reliable direct/partial
+matches per claim, preferring compatible context. Only when none are compatible
+does it include incompatible matches, explicitly marked as references. Each record
+has its original-row link and up to two documentary-source links. Full retrieval
+details stay in Debug. Very long summaries are visibly truncated below Sheets'
+cell limit, identically in the preview and export.
+
+With AI enabled, **Enviar** prompts when analysis is missing, unfinished, failed
+or outdated. Choose **Cancelar**, **Analisar primeiro** (refreshes the analysis),
+or **Enviar sem IA** (empty F). **Analisar primeiro** is disabled while inference
+is running. The toolbar checkbox **Permitir envio sem IA** suppresses these prompts
+and shows a reminder; it resets on reload. Completed results matching the current
+text and speaker are included even with this option enabled. Partial results are
+not exported. With AI disabled there is no prompt. The server validates saved
+jobs, and the queued assessment remains immutable through retries and restarts.
 
 The score is the one shown on the block when you press **Enviar**. It is left
 empty if `checkability.py` has not scored the block yet, if the text changed
-since it was scored, or if the score is a mock. Sent rows are never updated, so
-wait for the badge when the score matters.
+since it was scored, or if the score is a mock. The theme follows the same
+rules. Several blocks sent together get a theme only when they all have the
+same one; otherwise G is left empty. Sent rows are never updated, so wait for
+the badges when the score or the theme matters.
 
 Set **Início do debate** and its date in the operator page before sending. Sheet
 timestamps always use elapsed debate time, even if the page displays clock time.
@@ -258,7 +444,8 @@ immediately disables the button and locks text, labels, merge/unmerge, and movin
 text into or out of that block. A successful send shows **enviado à planilha**.
 The lock survives refreshes and server restarts. Make later corrections directly
 in Sheets: the app never updates or resends a successfully delivered snapshot.
-Copying and navigation remain available.
+Copying and navigation remain available. Once queued, the AI panel displays the
+frozen assessment for that delivery and cannot be reanalyzed from that block.
 
 The persistent queue is `data/<session>/sheets_outbox.jsonl`. A confirmed failure
 shows its error on the badge, unlocks the block and enables **Tentar novamente**.
@@ -349,6 +536,16 @@ Set `TYPESAFE_API_KEY` and `JEV_MODEL` in `.env`. See
 [CHECKABILITY.md](CHECKABILITY.md) for the rubric, the formula, the context sent
 with each block and mock mode.
 
+`themes.py` asks Jev to suggest one theme per block from a closed list, with the
+same context, skip rules and mock mode, and writes `themes.jsonl`:
+
+```bash
+python3 themes.py --data-dir data/debate --watch
+python3 themes.py --check            # reference examples with the expected theme
+```
+
+See [THEMES.md](THEMES.md) for the options, the families and combined blocks.
+
 ## Resilience
 
 - **Reconnects:** if the WebSocket drops or Soniox stops answering for 20 s, the
@@ -375,7 +572,8 @@ sheets_client.py     Google Sheets sending, delivery receipts and read-only chec
 requirements.txt     optional Google Sheets dependencies
 contexto.txt         context terms for the 2026 debate
 checkability.py      Jev checkability scores per block (rubric, context, store)
-jev_client.py        TypeSafe API client for Jev (retries, mock mode)
+themes.py            Jev theme suggestion per block (options, families, store)
+jev_client.py        TypeSafe API client for Jev (score and choice questions, retries, mock mode)
 
 data/<session>/blocks.jsonl   one JSON line per block update (last line per id wins)
 data/<session>/labels.json    speaker labels (server.py)
@@ -384,6 +582,7 @@ data/<session>/operator.json  session time settings and reversible block merges
 data/<session>/outbox.jsonl   send queue (server.py)
 data/<session>/sheets_outbox.jsonl  immutable Sheets snapshots and delivery status
 data/<session>/checkability.jsonl  Jev scores per block (last line per block id wins)
+data/<session>/themes.jsonl   Jev theme suggestions per block (last line per block id wins)
 data/<session>/status.json    recorder heartbeat, every 2 s
 data/<session>/audio/         16 kHz mono WAV chunks
 ```
