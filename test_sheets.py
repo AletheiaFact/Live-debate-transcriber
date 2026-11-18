@@ -445,9 +445,6 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(len(self.rows), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class PlatformTurnTests(unittest.TestCase):
     """The platform's turn schema is strict: only known fields, checkability only when there is a score."""
@@ -475,3 +472,7 @@ class PlatformTurnTests(unittest.TestCase):
         self.assertEqual(turns[0]["checkability"], 72)
         self.assertNotIn("checkability", turns[1])
         self.assertEqual(set(turns[1]), {"personality", "text", "externalId", "startedAt"})
+
+
+if __name__ == "__main__":
+    unittest.main()
