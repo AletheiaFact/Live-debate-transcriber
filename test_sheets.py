@@ -69,7 +69,7 @@ class QueueTests(unittest.TestCase):
         sent = []
         missing = []
         self.extra = [SimpleNamespace(cfg=SimpleNamespace(missing=lambda: missing),
-                                      enqueue=lambda label, blocks, waiting: sent.append((label, blocks)))]
+                                      enqueue=lambda label, blocks, waiting, checkability=None: sent.append((label, blocks)))]
         missing.append("ALETHEIA_URL")
         self.assertIn("ALETHEIA_URL", self.send(["b"])[1]["error"])
         self.assertEqual((sent, self.outbox.items), ([], {}))
@@ -79,6 +79,17 @@ class QueueTests(unittest.TestCase):
                          [("1", ["=literal claim b"])])
         self.assertEqual(self.send(["b"])[0], 400)  # Sheets rejects the resend before the platform sees it
         self.assertEqual(len(sent), 1)
+
+    def test_platform_gets_the_same_checkability_as_column_e(self):
+        sent = []
+        self.extra = [SimpleNamespace(cfg=SimpleNamespace(missing=lambda: []),
+                                      enqueue=lambda label, blocks, waiting, checkability=None: sent.append(checkability))]
+        self.score("b", "=literal claim b", 72.4)
+        self.assertEqual(self.send(["b"])[0], 200)
+        self.store.set_label("c", "1")
+        self.score("c", "=literal claim c", 90.0, "jev-mock")
+        self.assertEqual(self.send(["c"])[0], 200)
+        self.assertEqual(sent, [72, None])
 
     def test_success_stays_locked_after_restart(self):
         self.send(["b"])
@@ -436,3 +447,31 @@ class ClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlatformTurnTests(unittest.TestCase):
+    """The platform's turn schema is strict: only known fields, checkability only when there is a score."""
+    def test_turn_carries_checkability_only_when_scored(self):
+        from unittest import mock
+        import platform_client
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        turns, done = [], threading.Event()
+
+        def fake_http(method, url, body=None, headers=None, timeout=15):
+            turns.append(body["turns"][0])
+            if len(turns) == 2:
+                done.set()
+            return 201, {"drafts": [{"externalId": body["turns"][0]["externalId"], "_id": "t"}], "skipped": []}
+
+        cfg = SimpleNamespace(machine="m1", personalities={"1": "p1"}, aletheia_url="http://x", debate_id="d")
+        block = {"id": "a", "text": "fala", "start": "2026-10-23T00:01:00-04:00"}
+        with mock.patch.object(platform_client, "http_json", fake_http), \
+                mock.patch.object(platform_client, "read_session", lambda: {"token": "t"}):
+            outbox = platform_client.Outbox(cfg, temp.name)
+            outbox.enqueue("1", [block], checkability=72)
+            outbox.enqueue("1", [{**block, "id": "b"}])
+            self.assertTrue(done.wait(5))
+        self.assertEqual(turns[0]["checkability"], 72)
+        self.assertNotIn("checkability", turns[1])
+        self.assertEqual(set(turns[1]), {"personality", "text", "externalId", "startedAt"})

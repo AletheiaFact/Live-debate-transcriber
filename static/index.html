@@ -48,7 +48,7 @@
            border-radius: 6px; padding: .5rem .8rem .6rem; margin-bottom: .5rem; cursor: pointer; }
   .block.l1 { border-left-color: var(--lula); }
   .block.l2 { border-left-color: var(--flavio); }
-  .block.lM { opacity: .45; }
+  .block.lM, .block.locked { opacity: .45; }
   .block.target { outline: 2px solid var(--target); outline-offset: 1px; }
   .meta { display: flex; align-items: center; gap: .7rem; font-size: .78rem; color: var(--muted); }
   .time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
@@ -343,7 +343,7 @@ function updateJump() {
 // --- rendering ----------------------------------------------------------------
 function buildBlock(b, label, suggestion) {
   const el = document.createElement("div");
-  el.className = `block ${b.status}` + (label ? ` l${label}` : "") + (b.final === false ? " live" : "");
+  el.className = `block ${b.status}` + (label ? ` l${label}` : "") + (b.final === false ? " live" : "") + (isLocked(b.id) ? " locked" : "");
   if (suggestion) el.classList.add(`suggest-${suggestion}`);
   el.dataset.id = b.id;
 

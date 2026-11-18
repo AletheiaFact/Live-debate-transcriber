@@ -603,7 +603,8 @@ def enqueue(outbox, label, blocks, settings, score="", ai_cell=None, ai_job_ids=
     if isinstance(outbox, sheets_client.Outbox):
         return outbox.enqueue(label, blocks, settings, score, ai_cell, ai_job_ids, theme)
     # Platform ids are deterministic, so a resend of a queued or sent block is a no-op there.
-    return outbox.enqueue(label, blocks, waiting=False)
+    # The platform has no theme field yet, and its turn schema is strict, so the theme is not sent.
+    return outbox.enqueue(label, blocks, waiting=False, checkability=score if isinstance(score, int) else None)
 
 
 def _is_final(block):
